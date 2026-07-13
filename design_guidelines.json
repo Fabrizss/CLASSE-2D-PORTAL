@@ -1,0 +1,100 @@
+{
+  "typography": {
+    "fonts": {
+      "headings": "Cabinet Grotesk, Outfit, sans-serif",
+      "body": "Manrope, Plus Jakarta Sans, sans-serif",
+      "monospace": "JetBrains Mono, monospace"
+    },
+    "rules": {
+      "banned_fonts": ["Inter", "Roboto", "Open Sans", "Lato"],
+      "hierarchy": {
+        "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tighter font-bold",
+        "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight font-semibold",
+        "h3": "text-xl sm:text-2xl tracking-tight font-medium",
+        "h4": "text-lg sm:text-xl font-medium",
+        "body": "text-base leading-relaxed",
+        "labels": "text-xs tracking-[0.2em] uppercase font-bold text-muted-foreground"
+      }
+    }
+  },
+  "colors": {
+    "archetype": "Soft Utility mixed with Vibrant Play",
+    "palette": {
+      "primary": "#7C3AED",
+      "primary_hover": "#6D28D9",
+      "secondary": "#F3E8FF",
+      "accent_yellow": "#FBBF24",
+      "accent_pink": "#F472B6",
+      "background_light": "#FAFAFA",
+      "background_dark": "#0A0A0A",
+      "forbidden_colors": ["#7351B7", "#1B93A4"]
+    },
+    "tailwind_config_instructions": "Modify index.css :root variables. Set --primary to 262 83% 58% (Hex #7C3AED). Set --background to 0 0% 98%. Adjust dark mode --background to 0 0% 4%. Never use pure black or pure white; always tint with purple. Ensure colors are defined properly for Shadcn compatibility.",
+    "rules": {
+      "contrast": "Always ensure > 4.5:1 ratio for normal text. Hover states must explicitly set text color and lighten/darken the background.",
+      "accents": "Use vivid purple primarily for CTAs, active states, and small brand accents. Do not overload with full-screen gradients."
+    }
+  },
+  "visual_enhancers": {
+    "surfaces": {
+      "header": "Crystal Glass: backdrop-blur-xl bg-white/70 (light) or bg-black/60 (dark) with 1px border-white/20.",
+      "cards": "Flat background, subtle 1px border-border, max 12px border radius. Hover states: -translate-y-1, shadow-lg.",
+      "banned": ["Muddy gray transparency", "Fully transparent headers over content"]
+    },
+    "textures": "Subtle noise overlay (opacity 2-3%) to avoid digital flatness."
+  },
+  "layouts": {
+    "spacing": "Generous Spacing Philosophy. Use p-6, p-8 inside cards to avoid text collision. Use gap-6 or gap-8 in grids.",
+    "dashboard": "Bento Grid Protocol (High Density). grid-cols-1 md:grid-cols-3 lg:grid-cols-4. Gap-6.",
+    "navigation": "Sticky top nav (Crystal Glass) with small Logo (NOI DI 2D) without background + primary links. Visible on desktop, hamburger on mobile."
+  },
+  "motion": {
+    "p2p_actions": "Framer Motion is REQUIRED for P2P 'Throwing' actions. Create a custom hook/component to animate throwing a paper plane, water bucket, or pizza slice across the screen using animate().",
+    "micro_interactions": "Hover states must lift cards (-translate-y-1) and deepen shadows. Buttons must scale down (scale-95) on active/click.",
+    "page_transitions": "Staggered fade-in for list items and dashboard cards using framer-motion."
+  },
+  "components_instructions": {
+    "buttons": "Pill-shaped or rounded-lg. No generic styles. Use active animations.",
+    "forms": "Use Shadcn components. Do not use native <input>. Customize Shadcn with brand colors.",
+    "tables_lists": "Shadcn tables. Left-align text. Add subtle hover states on rows.",
+    "ai_study_chat": "Use Shadcn Tabs to switch between Flashcards, Upload, and Quiz. Chat needs distinct bubble styling (purple for self, gray for others).",
+    "toast": "Use Sonner for P2P action notifications and event signups. (Located in /app/frontend/src/components/ui/sonner.js)"
+  },
+  "accessibility": {
+    "data_testid": "ALL interactive elements must include a data-testid attribute in kebab-case (e.g., event-signup-button, throw-pizza-button).",
+    "motion": "Respect prefers-reduced-motion."
+  },
+  "media": {
+    "image_handling": "Mobile max-h-[80vh]. Never fully cover hero images; use bg-black/40 max. Images must have explicit alt text."
+  },
+  "3d_libraries": {
+    "recommendation": "Use framer-motion for the P2P throwing animations instead of pure 3D to keep performance high and maintain the modern minimalist feel."
+  },
+  "image_urls": {
+    "study_group": {
+      "url": "https://images.pexels.com/photos/35865718/pexels-photo-35865718.jpeg",
+      "description": "High school students studying together, use for AI Study Aid section background or card.",
+      "category": "Hero / Banner"
+    },
+    "auditorium_events": {
+      "url": "https://images.pexels.com/photos/20059728/pexels-photo-20059728.jpeg",
+      "description": "Empty auditorium, use for Events Registration page banner.",
+      "category": "Banner"
+    }
+  },
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "You are building a React application using .js/.jsx files. DO NOT use .tsx or TypeScript syntax.",
+    "NEVER create generic centered layouts. Use asymmetrical or balanced Bento Grids.",
+    "NEVER use generic fonts like Inter or Roboto for Headings. Use the recommended Cabinet Grotesk, Outfit, or Manrope.",
+    "DO NOT use placeholder image URLs. Only use the provided image URLs or lucide-react icons.",
+    "NO emoji characters in the UI for icons, use lucide-react or custom SVG.",
+    "The app must be a PWA. Provide a 'Guida installazione PWA' (PWA installation guide) in the UI or Settings.",
+    "Theme: Modern Minimalist with Purple Accents. Implement a Dark/Light mode toggle.",
+    "Italian Language required for all UI text ('NOI DI 2D', 'Iscrizioni', 'Aiuto Studio', 'Chat Pubblica', 'Pannello Admin').",
+    "P2P Actions (Foglietto, Secchio, Pizza) should overlay via absolute/fixed positioning over the viewport, animated with Framer Motion when triggered.",
+    "Chat feature requires automatic censorship logic (can be a simple regex/array of blocked words replacement with ***).",
+    "Do not put transparent backgrounds behind text if there's an image underneath. Always use Crystal Glass or solid colors.",
+    "All interactive elements must include a data-testid attribute.",
+    "Use 'sonner' for toast notifications."
+  ]
+}
