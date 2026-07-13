@@ -1,0 +1,16 @@
+{
+  "short_name": "NOI DI 2D",
+  "name": "NOI DI 2D — Portale della classe",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#faf5ff",
+  "theme_color": "#7C3AED",
+  "icons": [
+    {
+      "src": "https://customer-assets.emergentagent.com/job_fd8a2fce-eb5b-4ab8-a990-d9b853fdd702/artifacts/oxjy3e6l_Gemini_Generated_Image_.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

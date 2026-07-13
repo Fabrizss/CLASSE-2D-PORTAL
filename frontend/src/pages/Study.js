@@ -1,0 +1,171 @@
+import { useState, useRef } from "react";
+import { motion } from "framer-motion";
+import { toast } from "sonner";
+import { Upload, Send, Sparkles, RotateCw, GraduationCap, Layers, Loader2 } from "lucide-react";
+import { api, errMsg } from "@/lib/api";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+
+const BANNER = "https://images.pexels.com/photos/35865718/pexels-photo-35865718.jpeg";
+
+export default function Study() {
+  const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef();
+
+  // interrogazione
+  const [subject, setSubject] = useState("");
+  const [sessionId] = useState(() => Math.random().toString(36).slice(2));
+  const [msgs, setMsgs] = useState([]);
+  const [input, setInput] = useState("");
+  const [thinking, setThinking] = useState(false);
+
+  // flashcards
+  const [topic, setTopic] = useState("");
+  const [cards, setCards] = useState([]);
+  const [genLoading, setGenLoading] = useState(false);
+  const [flipped, setFlipped] = useState({});
+
+  const upload = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setUploading(true);
+    const fd = new FormData();
+    fd.append("file", f);
+    try {
+      const { data } = await api.post("/study/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      setFile(data);
+      toast.success(`Caricato: ${data.filename}`);
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setUploading(false); }
+  };
+
+  const sendMsg = async (e) => {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text) return;
+    setMsgs((m) => [...m, { role: "user", text }]);
+    setInput("");
+    setThinking(true);
+    try {
+      const { data } = await api.post("/study/chat", { session_id: sessionId, message: text, subject: subject || file?.filename });
+      setMsgs((m) => [...m, { role: "ai", text: data.reply }]);
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setThinking(false); }
+  };
+
+  const startQuiz = async () => {
+    setMsgs([]);
+    setThinking(true);
+    try {
+      const { data } = await api.post("/study/chat", {
+        session_id: sessionId,
+        message: `Iniziamo l'interrogazione${subject ? " su " + subject : ""}. Fammi la prima domanda.`,
+        subject: subject || file?.filename,
+      });
+      setMsgs([{ role: "ai", text: data.reply }]);
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setThinking(false); }
+  };
+
+  const genCards = async () => {
+    if (!topic && !file) return toast.error("Scrivi un argomento o carica un file");
+    setGenLoading(true);
+    setFlipped({});
+    try {
+      const { data } = await api.post("/study/flashcards", { topic: topic || null, file_id: file?.file_id || null, count: 8 });
+      setCards(data.cards);
+      toast.success(`${data.cards.length} flashcard generate!`);
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setGenLoading(false); }
+  };
+
+  return (
+    <div className="space-y-8">
+      <div className="relative rounded-3xl overflow-hidden h-52 sm:h-64">
+        <img src={BANNER} alt="Studenti che studiano insieme" className="w-full h-full object-cover" />
+        <div className="absolute inset-0 bg-primary/50 mix-blend-multiply" />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent" />
+        <div className="absolute bottom-0 p-6 sm:p-8 text-white">
+          <p className="text-xs tracking-[0.25em] uppercase font-bold opacity-80">Powered by AI</p>
+          <h1 className="font-head text-3xl sm:text-4xl font-black tracking-tight">Aiuto Studio</h1>
+        </div>
+      </div>
+
+      <Card className="p-4 border-border flex flex-col sm:flex-row items-center gap-3">
+        <input ref={fileRef} type="file" accept=".pdf,.txt,.md,.csv" onChange={upload} className="hidden" data-testid="file-input" />
+        <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={uploading} data-testid="upload-btn" className="rounded-full gap-2">
+          {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />} Carica materiale
+        </Button>
+        <p className="text-sm text-muted-foreground">{file ? `📄 ${file.filename} (${file.chars} caratteri)`.replace("📄 ", "") : "PDF o testo: l'AI lo userà per quiz e flashcard."}</p>
+      </Card>
+
+      <Tabs defaultValue="quiz">
+        <TabsList className="grid grid-cols-2 w-full max-w-md">
+          <TabsTrigger value="quiz" data-testid="tab-quiz" className="gap-2"><GraduationCap size={16} /> Interrogami</TabsTrigger>
+          <TabsTrigger value="cards" data-testid="tab-cards" className="gap-2"><Layers size={16} /> Flashcard</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="quiz" className="mt-6">
+          <Card className="border-border overflow-hidden">
+            <div className="p-4 border-b border-border flex flex-col sm:flex-row gap-3">
+              <Input value={subject} onChange={(e) => setSubject(e.target.value)} data-testid="subject-input"
+                placeholder="Argomento (es. Rivoluzione Francese)" className="rounded-full" />
+              <Button onClick={startQuiz} disabled={thinking} data-testid="start-quiz-btn" className="rounded-full gap-2 whitespace-nowrap">
+                <Sparkles size={16} /> Inizia interrogazione
+              </Button>
+            </div>
+            <div className="p-4 h-[380px] overflow-y-auto space-y-3 bg-secondary/30">
+              {msgs.length === 0 && <p className="text-center text-muted-foreground text-sm py-16">Il professore AI ti interrogherà qui.</p>}
+              {msgs.map((m, i) => (
+                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[80%] px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap ${
+                    m.role === "user" ? "bg-primary text-primary-foreground rounded-br-md" : "bg-card border border-border rounded-bl-md"}`}>
+                    {m.text}
+                  </div>
+                </div>
+              ))}
+              {thinking && <div className="flex justify-start"><div className="bg-card border border-border px-4 py-2.5 rounded-2xl"><Loader2 size={16} className="animate-spin text-primary" /></div></div>}
+            </div>
+            <form onSubmit={sendMsg} className="p-4 border-t border-border flex gap-2">
+              <Input value={input} onChange={(e) => setInput(e.target.value)} data-testid="quiz-input"
+                placeholder="Scrivi la tua risposta…" className="rounded-full" />
+              <Button type="submit" disabled={thinking} data-testid="quiz-send-btn" size="icon" className="rounded-full shrink-0"><Send size={16} /></Button>
+            </form>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="cards" className="mt-6 space-y-6">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <Input value={topic} onChange={(e) => setTopic(e.target.value)} data-testid="topic-input"
+              placeholder={file ? `Usa il file "${file.filename}" o scrivi un argomento` : "Argomento delle flashcard"} className="rounded-full" />
+            <Button onClick={genCards} disabled={genLoading} data-testid="gen-cards-btn" className="rounded-full gap-2 whitespace-nowrap">
+              {genLoading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />} Genera flashcard
+            </Button>
+          </div>
+          {cards.length === 0 && !genLoading && <p className="text-muted-foreground text-center py-12 text-sm">Genera flashcard da un argomento o dal file caricato, poi clicca per girarle.</p>}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {cards.map((c, i) => (
+              <motion.button key={i} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
+                onClick={() => setFlipped((f) => ({ ...f, [i]: !f[i] }))} data-testid={`flashcard-${i}`}
+                className="text-left h-40 relative [transform-style:preserve-3d] transition-transform duration-500"
+                style={{ transform: flipped[i] ? "rotateY(180deg)" : "none" }}>
+                <Card className="absolute inset-0 p-5 flex flex-col justify-between [backface-visibility:hidden] border-primary/30">
+                  <span className="text-xs tracking-widest uppercase font-bold text-primary">Domanda {i + 1}</span>
+                  <p className="font-head font-semibold">{c.q}</p>
+                  <span className="text-xs text-muted-foreground flex items-center gap-1"><RotateCw size={12} /> gira</span>
+                </Card>
+                <Card className="absolute inset-0 p-5 flex flex-col justify-between [backface-visibility:hidden] bg-primary text-primary-foreground" style={{ transform: "rotateY(180deg)" }}>
+                  <span className="text-xs tracking-widest uppercase font-bold opacity-80">Risposta</span>
+                  <p className="text-sm">{c.a}</p>
+                </Card>
+              </motion.button>
+            ))}
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
