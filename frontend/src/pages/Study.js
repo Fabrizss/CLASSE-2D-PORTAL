@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
-const BANNER = "https://images.pexels.com/photos/35865718/pexels-photo-35865718.jpeg";
+const BANNER = "https://images.unsplash.com/photo-1501504905252-473c47e087f8?crop=entropy&cs=srgb&fm=jpg&q=85&w=1600";
 
 export default function Study() {
   const [file, setFile] = useState(null);
@@ -84,14 +84,28 @@ export default function Study() {
 
   return (
     <div className="space-y-8">
-      <div className="relative rounded-3xl overflow-hidden h-52 sm:h-64">
-        <img src={BANNER} alt="Studenti che studiano insieme" className="w-full h-full object-cover" />
-        <div className="absolute inset-0 bg-primary/50 mix-blend-multiply" />
+      <div className="relative rounded-3xl overflow-hidden h-60 sm:h-72">
+        <img src={BANNER} alt="Scrivania di studio con libro aperto e laptop" className="w-full h-full object-cover" />
+        <div className="absolute inset-0 bg-gradient-to-tr from-primary/80 via-primary/40 to-transparent" />
         <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent" />
-        <div className="absolute bottom-0 p-6 sm:p-8 text-white">
-          <p className="text-xs tracking-[0.25em] uppercase font-bold opacity-80">Powered by AI</p>
-          <h1 className="font-head text-3xl sm:text-4xl font-black tracking-tight">Aiuto Studio</h1>
+        <div className="absolute inset-0 p-6 sm:p-10 flex flex-col justify-end text-white">
+          <p className="text-xs tracking-[0.25em] uppercase font-bold opacity-90 flex items-center gap-1.5"><Sparkles size={14} /> Il tuo tutor personale · Gemini AI</p>
+          <h1 className="font-head text-4xl sm:text-5xl font-black tracking-tight mt-1">Aiuto Studio</h1>
+          <p className="text-white/85 mt-2 max-w-lg text-sm sm:text-base">Fatti interrogare come in classe, trasforma i tuoi appunti in flashcard e arriva preparato a ogni verifica.</p>
         </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {[
+          { icon: GraduationCap, t: "Interrogazione AI", d: "Domande una alla volta, con voto e feedback." },
+          { icon: Layers, t: "Flashcard smart", d: "Generate dai tuoi file o da un argomento." },
+          { icon: Upload, t: "Carica appunti", d: "PDF o testo: l'AI studia con te." },
+        ].map((f, i) => (
+          <Card key={i} className="p-5 flex items-start gap-3 hover:-translate-y-1 transition-all">
+            <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary grid place-items-center shrink-0"><f.icon size={20} /></div>
+            <div><h3 className="font-head font-semibold">{f.t}</h3><p className="text-xs text-muted-foreground mt-0.5">{f.d}</p></div>
+          </Card>
+        ))}
       </div>
 
       <Card className="p-4 border-border flex flex-col sm:flex-row items-center gap-3">

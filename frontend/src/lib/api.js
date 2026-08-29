@@ -17,3 +17,9 @@ export function errMsg(e) {
   if (Array.isArray(d)) return d.map((x) => x.msg || "").join(" ");
   return e?.message || "Errore imprevisto";
 }
+
+export function requireOnline() {
+  if (!navigator.onLine) {
+    throw new Error("Sei offline: questa azione richiede una connessione.");
+  }
+}

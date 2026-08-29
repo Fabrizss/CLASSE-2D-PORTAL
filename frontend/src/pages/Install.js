@@ -1,7 +1,6 @@
-import { Share, PlusSquare, Bell, Smartphone, ShieldCheck } from "lucide-react";
+import { Share, PlusSquare, Bell, Smartphone } from "lucide-react";
 import { toast } from "sonner";
 import { enablePush } from "@/lib/push";
-import { useAuth } from "@/context/AuthContext";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
@@ -12,7 +11,6 @@ const STEPS = [
 ];
 
 export default function Install() {
-  const { user } = useAuth();
   const notify = async () => {
     try { await enablePush(); toast.success("Notifiche push attivate!"); }
     catch (e) { toast.error(e.message); }
@@ -40,16 +38,6 @@ export default function Install() {
       <Button onClick={notify} data-testid="install-enable-push" className="rounded-full gap-2 h-11 w-full sm:w-auto">
         <Bell size={17} /> Attiva notifiche su questo dispositivo
       </Button>
-
-      {user?.role === "admin" && (
-        <Card className="p-6 border-primary/30 bg-primary/5">
-          <div className="flex items-center gap-2 mb-2"><ShieldCheck size={18} className="text-primary" /><h3 className="font-head font-semibold text-lg">Come creare il primo admin</h3></div>
-          <p className="text-muted-foreground text-sm">
-            Il primo account admin viene creato automaticamente all'avvio con le credenziali definite nel file <code className="text-primary">backend/.env</code> (<code>ADMIN_EMAIL</code> e <code>ADMIN_PASSWORD</code>).
-            Accedi con quelle credenziali, poi da questo Pannello Admin puoi approvare i nuovi membri e promuovere altri utenti ad admin.
-          </p>
-        </Card>
-      )}
     </div>
   );
 }

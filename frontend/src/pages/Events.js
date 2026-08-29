@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { Plus, MapPin, Clock, Users, Trash2, Bell, Check } from "lucide-react";
-import { api, errMsg } from "@/lib/api";
+import { Plus, MapPin, Clock, Users, Trash2, Bell, Check, Eye, ListChecks } from "lucide-react";
+import { api, errMsg, requireOnline } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { enablePush } from "@/lib/push";
 import { Card } from "@/components/ui/card";
@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 
 const BANNER = "https://images.pexels.com/photos/20059728/pexels-photo-20059728.jpeg";
@@ -28,31 +28,49 @@ export default function Events() {
   const [events, setEvents] = useState([]);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ title: "", description: "", urgency: "normale", deadline: "", location: "" });
+  const [form, setForm] = useState({ title: "", description: "", urgency: "normale", deadline: "", location: "", options: "", capacity: "" });
+  const [viewEvent, setViewEvent] = useState(null);
+  const [viewData, setViewData] = useState(null);
 
   const load = () => api.get("/events").then((r) => setEvents(r.data)).catch(() => {});
   useEffect(() => { load(); }, []);
 
   const create = async (e) => {
     e.preventDefault();
+    try { requireOnline(); } catch (err) { return toast.error(err.message); }
     setSaving(true);
     try {
-      await api.post("/events", form);
+      const caps = {};
+      const options = form.options.split(",").map((s) => s.trim()).filter(Boolean).map((tok) => {
+        const m = tok.match(/^(.*?):(\d+)$/);
+        if (m) { caps[m[1].trim()] = parseInt(m[2], 10); return m[1].trim(); }
+        return tok;
+      });
+      const capacity = form.capacity ? parseInt(form.capacity, 10) : null;
+      await api.post("/events", { ...form, options, caps, capacity });
       toast.success("Iscrizione pubblicata! Notifiche ed email inviate.");
       setOpen(false);
-      setForm({ title: "", description: "", urgency: "normale", deadline: "", location: "" });
+      setForm({ title: "", description: "", urgency: "normale", deadline: "", location: "", options: "", capacity: "" });
       load();
     } catch (err) {
       toast.error(errMsg(err));
     } finally { setSaving(false); }
   };
 
-  const signup = async (id) => {
+  const signup = async (id, option = null) => {
+    try { requireOnline(); } catch (err) { return toast.error(err.message); }
     try {
-      const { data } = await api.post(`/events/${id}/signup`);
-      setEvents((ev) => ev.map((e) => e.id === id ? { ...e, signed_up: data.signed_up, signup_count: data.signup_count } : e));
+      const { data } = await api.post(`/events/${id}/signup`, { option });
+      setEvents((ev) => ev.map((e) => e.id === id ? { ...e, ...data } : e));
       toast.success(data.signed_up ? "Iscritto!" : "Iscrizione annullata");
     } catch (err) { toast.error(errMsg(err)); }
+  };
+
+  const openSignups = async (ev) => {
+    setViewEvent(ev);
+    setViewData(null);
+    try { const { data } = await api.get(`/events/${ev.id}/signups`); setViewData(data); }
+    catch (err) { toast.error(errMsg(err)); setViewEvent(null); }
   };
 
   const remove = async (id) => {
@@ -89,7 +107,10 @@ export default function Events() {
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-md">
-              <DialogHeader><DialogTitle className="font-head">Richiedi un'iscrizione</DialogTitle></DialogHeader>
+              <DialogHeader>
+                <DialogTitle className="font-head">Richiedi un'iscrizione</DialogTitle>
+                <DialogDescription>Compila i dettagli. Gli iscritti riceveranno notifica ed email.</DialogDescription>
+              </DialogHeader>
               <form onSubmit={create} className="space-y-4">
                 <div><Label>Titolo</Label><Input required value={form.title} data-testid="event-title-input"
                   onChange={(e) => setForm({ ...form, title: e.target.value })} className="mt-1.5" placeholder="Olimpiadi di Matematica" /></div>
@@ -107,8 +128,16 @@ export default function Events() {
                   <div><Label>Scadenza</Label><Input value={form.deadline} data-testid="event-deadline-input"
                     onChange={(e) => setForm({ ...form, deadline: e.target.value })} className="mt-1.5" placeholder="12 Giu" /></div>
                 </div>
-                <div><Label>Luogo</Label><Input value={form.location} data-testid="event-location-input"
-                  onChange={(e) => setForm({ ...form, location: e.target.value })} className="mt-1.5" placeholder="Aula Magna" /></div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div><Label>Luogo</Label><Input value={form.location} data-testid="event-location-input"
+                    onChange={(e) => setForm({ ...form, location: e.target.value })} className="mt-1.5" placeholder="Aula Magna" /></div>
+                  <div><Label>Posti totali <span className="text-muted-foreground font-normal">(opz.)</span></Label><Input type="number" min="1" value={form.capacity} data-testid="event-capacity-input"
+                    onChange={(e) => setForm({ ...form, capacity: e.target.value })} className="mt-1.5" placeholder="es. 30" /></div>
+                </div>
+                <div><Label>Gruppi / opzioni <span className="text-muted-foreground font-normal">(facoltativo)</span></Label>
+                  <Input value={form.options} data-testid="event-options-input"
+                    onChange={(e) => setForm({ ...form, options: e.target.value })} className="mt-1.5" placeholder="es. Squadra A:10, Squadra B:10" />
+                  <p className="text-xs text-muted-foreground mt-1">Separa con virgola. Aggiungi «:numero» per il massimo di ogni gruppo (es. «Turno mattina:15»).</p></div>
                 <DialogFooter>
                   <Button type="submit" disabled={saving} data-testid="submit-event-btn" className="rounded-full w-full">
                     {saving ? "Invio…" : "Pubblica & Notifica"}
@@ -129,28 +158,78 @@ export default function Events() {
               <Card className="p-6 border-border h-full flex flex-col hover:-translate-y-1 hover:shadow-lg transition-all">
                 <div className="flex items-start justify-between gap-3">
                   <Badge variant="outline" className={`rounded-full ${u.cls}`}>{u.label}</Badge>
-                  {(user?.role === "admin" || e.created_by === user?.id) && (
-                    <button onClick={() => remove(e.id)} data-testid={`delete-event-${e.id}`}
-                      className="text-muted-foreground hover:text-destructive transition-colors"><Trash2 size={16} /></button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {e.can_manage && (
+                      <button onClick={() => openSignups(e)} data-testid={`view-signups-${e.id}`} title="Vedi iscritti"
+                        className="text-muted-foreground hover:text-primary transition-colors"><Eye size={16} /></button>
+                    )}
+                    {e.can_manage && (
+                      <button onClick={() => remove(e.id)} data-testid={`delete-event-${e.id}`}
+                        className="text-muted-foreground hover:text-destructive transition-colors"><Trash2 size={16} /></button>
+                    )}
+                  </div>
                 </div>
                 <h3 className="font-head text-xl font-semibold mt-3">{e.title}</h3>
                 <p className="text-muted-foreground text-sm mt-2 flex-1">{e.description}</p>
                 <div className="flex flex-wrap gap-4 text-xs text-muted-foreground mt-4">
                   {e.deadline && <span className="flex items-center gap-1"><Clock size={13} /> {e.deadline}</span>}
                   {e.location && <span className="flex items-center gap-1"><MapPin size={13} /> {e.location}</span>}
-                  <span className="flex items-center gap-1"><Users size={13} /> {e.signup_count} iscritti</span>
+                  <span className="flex items-center gap-1"><Users size={13} /> {e.signup_count}{e.capacity ? `/${e.capacity}` : ""} iscritti</span>
                 </div>
-                <Button onClick={() => signup(e.id)} data-testid={`signup-btn-${e.id}`}
-                  variant={e.signed_up ? "secondary" : "default"}
-                  className="rounded-full mt-5 gap-2 active:scale-95 transition-transform">
-                  {e.signed_up ? <><Check size={16} /> Iscritto</> : "Iscriviti"}
-                </Button>
+                {e.options && e.options.length > 0 ? (
+                  <div className="mt-5">
+                    <p className="text-xs tracking-widest uppercase font-bold text-muted-foreground mb-2 flex items-center gap-1"><ListChecks size={13} /> Scegli il gruppo</p>
+                    <div className="flex flex-wrap gap-2">
+                      {e.options.map((opt) => {
+                        const cnt = e.option_counts?.[opt] ?? 0;
+                        const cap = e.caps?.[opt];
+                        const full = cap && cnt >= cap && e.my_option !== opt;
+                        return (
+                          <Button key={opt} onClick={() => signup(e.id, opt)} data-testid={`signup-opt-${e.id}-${opt}`}
+                            disabled={full} variant={e.my_option === opt ? "default" : "outline"} size="sm"
+                            className="rounded-full gap-1.5 active:scale-95 transition-transform">
+                            {e.my_option === opt && <Check size={14} />} {opt}
+                            <span className="opacity-60">{cap ? `${cnt}/${cap}` : cnt}</span>
+                          </Button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <Button onClick={() => signup(e.id)} data-testid={`signup-btn-${e.id}`}
+                    variant={e.signed_up ? "secondary" : "default"}
+                    className="rounded-full mt-5 gap-2 active:scale-95 transition-transform">
+                    {e.signed_up ? <><Check size={16} /> Iscritto</> : "Iscriviti"}
+                  </Button>
+                )}
               </Card>
             </motion.div>
           );
         })}
       </div>
+
+      <Dialog open={!!viewEvent} onOpenChange={(o) => !o && setViewEvent(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-head">Iscritti · {viewEvent?.title}</DialogTitle>
+            <DialogDescription>Elenco visibile solo ad admin e organizzatore.</DialogDescription>
+          </DialogHeader>
+          {!viewData ? <p className="text-sm text-muted-foreground py-6 text-center">Caricamento…</p> : (
+            <div className="max-h-80 overflow-y-auto space-y-2">
+              {viewData.signups.length === 0 && <p className="text-sm text-muted-foreground py-6 text-center">Ancora nessun iscritto.</p>}
+              {viewData.signups.map((s, i) => (
+                <div key={i} className="flex items-center gap-3 p-2.5 rounded-xl border border-border" data-testid="signup-row">
+                  <div className="w-8 h-8 rounded-full grid place-items-center text-white text-xs font-bold shrink-0" style={{ background: s.avatar_color || "#7C3AED" }}>
+                    {s.name?.[0]?.toUpperCase()}
+                  </div>
+                  <span className="font-medium text-sm flex-1">{s.name}</span>
+                  {s.option && <Badge variant="outline" className="rounded-full">{s.option}</Badge>}
+                </div>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

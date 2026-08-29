@@ -8,6 +8,7 @@ import Dashboard from "@/pages/Dashboard";
 import Events from "@/pages/Events";
 import Study from "@/pages/Study";
 import Chat from "@/pages/Chat";
+import News from "@/pages/News";
 import Admin from "@/pages/Admin";
 import Install from "@/pages/Install";
 
@@ -38,6 +39,7 @@ function Shell() {
       <Route path="/events" element={<Protected><Events /></Protected>} />
       <Route path="/study" element={<Protected><Study /></Protected>} />
       <Route path="/chat" element={<Protected><Chat /></Protected>} />
+      <Route path="/news" element={<Protected><News /></Protected>} />
       <Route path="/install" element={<Protected><Install /></Protected>} />
       <Route path="/admin" element={<Protected adminOnly><Admin /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />

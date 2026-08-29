@@ -1,0 +1,37 @@
+{
+  "summary": "Frontend-only regression covering the 6 new/updated features on NOI DI 2D. 5/6 fully pass. Admin login+dashboard 'Pillola del giorno' OK; News create-with-attachment + delete OK (attachment link rendered with data-testid news-attachment-*); Chat censorship of Italian bad word 'cazzo' → '*****' OK, single hover delete + multi-select 'Elimina (n)' bulk delete OK; Admin temp 24h ban blocks member login with toast 'Sei sospeso fino al ...' (403), unban restores successful login; OFFLINE flow: service worker registers and controls the page, [data-testid=offline-banner] appears when going offline, [data-testid=chat-input] and send button become disabled, previously cached chat messages remain rendered read-only, going back online removes the banner. ONE INTEGRATION BUG in Events: per-group counter does not increment client-side after signup (stays 0/2) although backend registers the signup (visible via 'Vedi iscritti' modal).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Event signup with grouped options",
+        "issue": "After POST /api/events/{id}/signup the client updates only signed_up/signup_count/my_option — it does NOT update option_counts. Result: the per-option button label stays at e.g. '0/2' even after the current user joins Squadra A. Highlighting (variant + check icon) works because my_option is set, but the visible per-group count is stale until a full page refresh (which re-fetches /api/events). Backend is correct: 'Vedi iscritti' modal shows the 1 signup row immediately.",
+        "affected_selectors": ["[data-testid^=signup-opt-]"]
+      }
+    ],
+    "design_issues": [
+      { "screen": "Ban dialog (Admin.js)", "issues": ["Radix DialogContent still lacks aria-describedby → 'Missing Description or aria-describedby for DialogContent' console warning (a11y, non-blocking)."] }
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py"],
+  "action_items": [
+    "Events.js signup(): after receiving the response, also merge option_counts. Either (a) return option_counts from POST /api/events/{id}/signup and set it in state, or (b) simply call load() again to re-fetch all events. Recommended: include option_counts in the signup response and merge it: setEvents((ev) => ev.map((e) => e.id === id ? { ...e, ...data } : e)).",
+    "OPTIONAL: add DialogDescription to the Ban dialog in Admin.js to silence the Radix a11y warning."
+  ],
+  "critical_code_review_comments": [
+    "Events.js signup response merge is incomplete — option_counts must be part of the merged state (or trigger a refresh). This is the only real functional gap found in this iteration.",
+    "SW offline fallback: when the user navigates to a fresh route (e.g. /news) while already offline and that route was never navigated to before, the SW falls back to the cached app-shell ('/'). Because BrowserRouter reads window.location, this means the user lands on Dashboard rather than /news. Not a bug per se (SPA shell fallback pattern), but consider deep-link support by caching /news, /events, /chat as shell aliases if this becomes a UX concern.",
+    "Chat page polls /api/chat/messages every 3s via setInterval; while offline these polls all fail with ERR_INTERNET_DISCONNECTED and pollute the console — consider pausing polling when useOnline() is false.",
+    "News attachment link embeds the raw token in the URL as ?auth=<token> (news-attachment-*). Works, but exposes the JWT in browser history / referrer headers on any click. Consider using Authorization header via a fetch-and-blob download instead.",
+    "Layout cache-warming useEffect fires on every route change; harmless but redundant — could gate on a ref to run once per session."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "not-tested (per request)", "frontend": "5.5/6 features fully pass; 1 minor client-state bug in Events option counter" },
+  "test_credentials": "Admin: admin@noidi2d.it / AdminNoi2D! (auto-seeded). Test member registered per run (testban_<ts>@noidi2d.it / TestPass1!) and cleaned up.",
+  "seed_data_creation": "Created & deleted 1 news, 1 event ('TEST_Evento_<ts>' — may still be present, cleanup best-effort failed at end because admin session was on member context), several chat messages (all deleted via single + bulk delete), 1 test member (ban→unban→delete attempted).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All six review-requested flows verified end-to-end. Only actionable fix: Events.js signup() merge must include option_counts (or call load()). Everything else — offline banner + SW caching, chat bulk delete, ban/unban, news attachments, dashboard quote card — works. Frontend Playwright script logic in this iteration used per-testid selectors: [data-testid=new-news-btn], news-title-input, news-body-input, news-file-input, submit-news-btn, delete-news-*, news-attachment-*-*, new-event-btn, event-title-input, event-desc-input, event-capacity-input, event-options-input, submit-event-btn, signup-opt-<id>-<opt>, view-signups-*, signup-row, chat-input, chat-send-btn, delete-msg-*, select-mode-btn, select-msg-*, bulk-delete-btn, admin-user-*, approve-*, ban-*, ban-24h, unban-*, delete-*, tab-all, offline-banner. Test cleanup left one TEST_Evento_<ts> event on the server — remove manually if desired.",
+  "rca of the issue": "Events option counter stuck at 0/2 → In /app/frontend/src/pages/Events.js signup() the state merge is: setEvents((ev) => ev.map((e) => e.id === id ? { ...e, signed_up: data.signed_up, signup_count: data.signup_count, my_option: data.my_option } : e)) — this deliberately omits option_counts. So the per-group '{cnt}/{cap}' rendered from e.option_counts?.[opt] never advances until the user leaves and returns to /events (which triggers load() → GET /api/events with fresh option_counts). Fix: either include option_counts in POST /api/events/{id}/signup response and merge it (best UX, no extra roundtrip), or simply call load() after signup. The backend already tracks counts correctly (verified: 'Vedi iscritti' modal returned 1 signup row immediately after clicking Squadra A)."
+}

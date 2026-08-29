@@ -94,7 +94,7 @@ export default function P2PLayer() {
       } catch {}
     };
     poll();
-    const iv = setInterval(poll, 3500);
+    const iv = setInterval(poll, 2000);
     return () => { alive = false; clearInterval(iv); };
   }, [push]);
 

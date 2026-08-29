@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { LayoutDashboard, CalendarCheck, BrainCircuit, MessagesSquare, Shield, Download, Sun, Moon, LogOut, Menu, X } from "lucide-react";
+import { LayoutDashboard, CalendarCheck, BrainCircuit, MessagesSquare, Newspaper, Shield, Download, Sun, Moon, LogOut, Menu, X, WifiOff } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { useOnline } from "@/hooks/useOnline";
+import { api } from "@/lib/api";
 import { LOGO } from "@/App";
 import P2PLayer from "@/components/P2PLayer";
 import { Button } from "@/components/ui/button";
@@ -11,6 +13,7 @@ const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/events", label: "Iscrizioni", icon: CalendarCheck },
   { to: "/study", label: "Aiuto Studio", icon: BrainCircuit },
+  { to: "/news", label: "News", icon: Newspaper },
   { to: "/chat", label: "Canale", icon: MessagesSquare },
   { to: "/install", label: "Installa App", icon: Download },
 ];
@@ -25,7 +28,14 @@ export default function Layout({ children }) {
   const loc = useLocation();
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
+  const online = useOnline();
   const links = user?.role === "admin" ? [...NAV, { to: "/admin", label: "Admin", icon: Shield }] : NAV;
+
+  // Cache-warming: quando online, precarica i dati read-only per la modalità offline (via service worker)
+  useEffect(() => {
+    if (!online) return;
+    ["/chat/messages", "/news", "/events"].forEach((p) => api.get(p).catch(() => {}));
+  }, [online, loc.pathname]);
 
   const NavLinks = ({ onClick }) => (
     <>
@@ -44,9 +54,12 @@ export default function Layout({ children }) {
   );
 
   return (
-    <div className="App min-h-screen bg-background noise-overlay">
+    <div className="App min-h-screen bg-background noise-overlay relative">
+      <div className="blob" style={{ background: "#a855f7", width: 480, height: 480, top: -120, right: -120 }} />
+      <div className="blob" style={{ background: "#f472b6", width: 420, height: 420, bottom: -160, left: -140 }} />
+      <div className="blob" style={{ background: "#7C3AED", width: 360, height: 360, top: "40%", left: "55%" }} />
       <P2PLayer />
-      <header className="sticky top-0 z-50 backdrop-blur-xl bg-background/70 border-b border-border">
+      <header className="sticky top-0 z-50 glass-strong border-b border-border/50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           <Link to="/" className="flex items-center gap-2.5">
             <Logo />
@@ -81,7 +94,7 @@ export default function Layout({ children }) {
         <AnimatePresence>
           {open && (
             <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}
-              className="lg:hidden overflow-hidden border-t border-border bg-background/95">
+              className="lg:hidden overflow-hidden border-t border-border glass">
               <div className="p-4 flex flex-col gap-2">
                 <NavLinks onClick={() => setOpen(false)} />
                 <Button variant="ghost" onClick={() => { logout(); nav("/auth"); }} className="justify-start text-destructive">
@@ -92,7 +105,18 @@ export default function Layout({ children }) {
           )}
         </AnimatePresence>
       </header>
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">{children}</main>
+      <AnimatePresence>
+        {!online && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+            data-testid="offline-banner"
+            className="sticky top-16 z-40 bg-amber-500/95 text-amber-950 overflow-hidden">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2 flex items-center gap-2 text-sm font-semibold">
+              <WifiOff size={16} /> Sei offline — stai vedendo i dati salvati in sola lettura. Le azioni sono disabilitate.
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 relative z-10">{children}</main>
     </div>
   );
 }

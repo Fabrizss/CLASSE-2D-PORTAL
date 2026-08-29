@@ -15,7 +15,7 @@ import jwt
 import bcrypt
 import resend
 import requests
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form, Header, Query, Response
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr
@@ -65,7 +65,17 @@ def public_user(u: dict) -> dict:
         "id": u["id"], "name": u["name"], "email": u["email"], "role": u["role"],
         "status": u["status"], "can_create_events": u.get("can_create_events", False),
         "avatar_color": u.get("avatar_color", "#7C3AED"),
+        "ban_permanent": u.get("ban_permanent", False),
+        "banned_until": u.get("banned_until"),
     }
+
+def ban_active(u: dict):
+    if u.get("ban_permanent"):
+        return True, "Il tuo account è stato bannato permanentemente."
+    bu = u.get("banned_until")
+    if bu and bu > now_iso():
+        return True, f"Sei sospeso fino al {bu[:16].replace('T', ' ')} (UTC)."
+    return False, ""
 
 async def get_current_user(request: Request) -> dict:
     token = None
@@ -89,6 +99,9 @@ async def require_approved(request: Request) -> dict:
     u = await get_current_user(request)
     if u["status"] != "approved":
         raise HTTPException(status_code=403, detail="Account in attesa di approvazione")
+    active, msg = ban_active(u)
+    if active:
+        raise HTTPException(status_code=403, detail=msg)
     return u
 
 async def require_admin(request: Request) -> dict:
@@ -113,6 +126,21 @@ class EventIn(BaseModel):
     urgency: str = "normale"  # bassa, normale, alta, urgente
     deadline: Optional[str] = None
     location: Optional[str] = None
+    options: List[str] = []  # gruppi/opzioni di iscrizione
+    capacity: Optional[int] = None  # posti massimi totali
+    caps: dict = {}  # {opzione: max}
+
+class NewsIn(BaseModel):
+    title: str
+    body: str
+    attachments: List[dict] = []
+
+class SignupIn(BaseModel):
+    option: Optional[str] = None
+
+class BanIn(BaseModel):
+    mode: str = "temp"  # perm / temp
+    hours: int = 24
 
 class MessageIn(BaseModel):
     text: str
@@ -229,6 +257,9 @@ async def login(body: LoginIn):
         raise HTTPException(status_code=403, detail="Account in attesa di approvazione dell'admin")
     if u["status"] == "rejected":
         raise HTTPException(status_code=403, detail="Accesso rifiutato dall'admin")
+    active, msg = ban_active(u)
+    if active:
+        raise HTTPException(status_code=403, detail=msg)
     return {"token": create_token(u["id"]), "user": public_user(u)}
 
 @api.get("/auth/me")
@@ -274,13 +305,35 @@ async def delete_user(uid: str, u: dict = Depends(require_admin)):
     await db.users.delete_one({"id": uid})
     return {"ok": True}
 
+@api.post("/admin/users/{uid}/ban")
+async def ban_user(uid: str, body: BanIn, u: dict = Depends(require_admin)):
+    if uid == u["id"]:
+        raise HTTPException(400, "Non puoi bannare te stesso")
+    if body.mode == "perm":
+        await db.users.update_one({"id": uid}, {"$set": {"ban_permanent": True, "banned_until": None}})
+    else:
+        until = (datetime.now(timezone.utc) + timedelta(hours=max(1, body.hours))).isoformat()
+        await db.users.update_one({"id": uid}, {"$set": {"ban_permanent": False, "banned_until": until}})
+    return {"ok": True}
+
+@api.post("/admin/users/{uid}/unban")
+async def unban_user(uid: str, u: dict = Depends(require_admin)):
+    await db.users.update_one({"id": uid}, {"$set": {"ban_permanent": False, "banned_until": None}})
+    return {"ok": True}
+
 # ---------------- events / iscrizioni ----------------
 @api.get("/events")
 async def get_events(u: dict = Depends(require_approved)):
     events = await db.events.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
     for e in events:
-        e["signed_up"] = u["id"] in e.get("signups", [])
-        e["signup_count"] = len(e.get("signups", []))
+        signs = e.get("signups", [])
+        mine = next((s for s in signs if s["user_id"] == u["id"]), None)
+        e["signed_up"] = mine is not None
+        e["my_option"] = mine.get("option") if mine else None
+        e["signup_count"] = len(signs)
+        e["option_counts"] = {opt: sum(1 for s in signs if s.get("option") == opt) for opt in e.get("options", [])}
+        e["can_manage"] = u["role"] == "admin" or e["created_by"] == u["id"]
+        e.pop("signups", None)
     return events
 
 @api.post("/events")
@@ -291,6 +344,8 @@ async def create_event(body: EventIn, u: dict = Depends(require_approved)):
     event = {
         "id": eid, "title": body.title, "description": body.description,
         "urgency": body.urgency, "deadline": body.deadline, "location": body.location,
+        "options": [o.strip() for o in body.options if o.strip()],
+        "capacity": body.capacity, "caps": {k: v for k, v in (body.caps or {}).items() if v},
         "created_by": u["id"], "created_by_name": u["name"],
         "signups": [], "created_at": now_iso(),
     }
@@ -302,29 +357,47 @@ async def create_event(body: EventIn, u: dict = Depends(require_approved)):
         f"Nuova iscrizione ({body.urgency})", body.title, "/events"))
     event.pop("signups", None)
     event.pop("_id", None)
-    return {**event, "signup_count": 0, "signed_up": False}
+    return {**event, "signup_count": 0, "signed_up": False, "my_option": None, "can_manage": True, "option_counts": {}}
 
 @api.post("/events/{eid}/signup")
-async def signup_event(eid: str, u: dict = Depends(require_approved)):
+async def signup_event(eid: str, body: SignupIn, u: dict = Depends(require_approved)):
     ev = await db.events.find_one({"id": eid})
     if not ev:
         raise HTTPException(404, "Iscrizione non trovata")
-    signups = set(ev.get("signups", []))
-    if u["id"] in signups:
-        signups.discard(u["id"])
+    opts = ev.get("options", [])
+    option = body.option
+    if opts:
+        if not option:
+            raise HTTPException(400, "Scegli un'opzione")
+        if option not in opts:
+            raise HTTPException(400, "Opzione non valida")
     else:
-        signups.add(u["id"])
-    await db.events.update_one({"id": eid}, {"$set": {"signups": list(signups)}})
-    return {"signed_up": u["id"] in signups, "signup_count": len(signups)}
+        option = None
+    existing = next((s for s in ev.get("signups", []) if s["user_id"] == u["id"]), None)
+    signs = [s for s in ev.get("signups", []) if s["user_id"] != u["id"]]
+    if existing and existing.get("option") == option:
+        signed = False
+    else:
+        cap = ev.get("capacity")
+        if cap and len(signs) >= cap:
+            raise HTTPException(400, "Posti esauriti per questo evento")
+        ocap = (ev.get("caps") or {}).get(option) if option else None
+        if ocap and sum(1 for s in signs if s.get("option") == option) >= ocap:
+            raise HTTPException(400, f"Posti esauriti per «{option}»")
+        signs.append({"user_id": u["id"], "name": u["name"], "avatar_color": u.get("avatar_color", "#7C3AED"), "option": option, "at": now_iso()})
+        signed = True
+    await db.events.update_one({"id": eid}, {"$set": {"signups": signs}})
+    oc = {opt: sum(1 for s in signs if s.get("option") == opt) for opt in opts}
+    return {"signed_up": signed, "signup_count": len(signs), "my_option": option if signed else None, "option_counts": oc}
 
 @api.get("/events/{eid}/signups")
-async def event_signups(eid: str, u: dict = Depends(require_admin)):
+async def event_signups(eid: str, u: dict = Depends(require_approved)):
     ev = await db.events.find_one({"id": eid}, {"_id": 0})
     if not ev:
         raise HTTPException(404, "Non trovata")
-    ids = ev.get("signups", [])
-    users = await db.users.find({"id": {"$in": ids}}, {"_id": 0}).to_list(1000)
-    return [public_user(x) for x in users]
+    if u["role"] != "admin" and ev["created_by"] != u["id"]:
+        raise HTTPException(403, "Solo admin o organizzatore")
+    return {"signups": ev.get("signups", []), "options": ev.get("options", [])}
 
 @api.delete("/events/{eid}")
 async def delete_event(eid: str, u: dict = Depends(require_approved)):
@@ -355,6 +428,86 @@ async def post_message(body: MessageIn, u: dict = Depends(require_approved)):
     }
     await db.chat_messages.insert_one(dict(msg))
     return msg
+
+@api.delete("/chat/messages/{mid}")
+async def delete_message(mid: str, u: dict = Depends(require_admin)):
+    await db.chat_messages.delete_one({"id": mid})
+    return {"ok": True}
+
+class BulkDeleteIn(BaseModel):
+    ids: List[str]
+
+@api.post("/chat/messages/delete")
+async def bulk_delete_messages(body: BulkDeleteIn, u: dict = Depends(require_admin)):
+    await db.chat_messages.delete_many({"id": {"$in": body.ids}})
+    return {"ok": True, "deleted": len(body.ids)}
+
+# ---------------- object storage ----------------
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+APP_NAME = "noidi2d"
+_storage_key = None
+
+def init_storage():
+    global _storage_key
+    if _storage_key:
+        return _storage_key
+    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
+    resp.raise_for_status()
+    _storage_key = resp.json()["storage_key"]
+    return _storage_key
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    resp = requests.put(f"{STORAGE_URL}/objects/{path}",
+                        headers={"X-Storage-Key": init_storage(), "Content-Type": content_type},
+                        data=data, timeout=120)
+    resp.raise_for_status()
+    return resp.json()
+
+def get_object(path: str):
+    resp = requests.get(f"{STORAGE_URL}/objects/{path}",
+                        headers={"X-Storage-Key": init_storage()}, timeout=60)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+# ---------------- news ----------------
+@api.post("/news/upload")
+async def news_upload(file: UploadFile = File(...), u: dict = Depends(require_admin)):
+    data = await file.read()
+    ext = file.filename.split(".")[-1] if "." in (file.filename or "") else "bin"
+    path = f"{APP_NAME}/news/{uuid.uuid4()}.{ext}"
+    ct = file.content_type or "application/octet-stream"
+    result = await asyncio.to_thread(put_object, path, data, ct)
+    return {"path": result["path"], "filename": file.filename, "content_type": ct, "size": result.get("size", len(data))}
+
+@api.get("/news")
+async def list_news(u: dict = Depends(require_approved)):
+    return await db.news.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+@api.post("/news")
+async def create_news(body: NewsIn, u: dict = Depends(require_admin)):
+    item = {"id": str(uuid.uuid4()), "title": body.title, "body": body.body,
+            "attachments": body.attachments, "author_name": u["name"], "created_at": now_iso()}
+    await db.news.insert_one(dict(item))
+    asyncio.create_task(send_push_to_all("Nuova news · NOI DI 2D", body.title, "/news"))
+    item.pop("_id", None)
+    return item
+
+@api.delete("/news/{nid}")
+async def delete_news(nid: str, u: dict = Depends(require_admin)):
+    await db.news.delete_one({"id": nid})
+    return {"ok": True}
+
+@api.get("/news/file/{path:path}")
+async def news_file(path: str, auth: str = Query(None), authorization: str = Header(None)):
+    token = auth or (authorization[7:] if authorization and authorization.startswith("Bearer ") else None)
+    if not token:
+        raise HTTPException(401, "Non autenticato")
+    try:
+        jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Token non valido")
+    data, ct = await asyncio.to_thread(get_object, path)
+    return Response(content=data, media_type=ct)
 
 # ---------------- P2P actions ----------------
 @api.post("/actions")
@@ -490,6 +643,11 @@ async def startup():
     await db.users.create_index("email", unique=True)
     await db.users.create_index("id")
     await db.push_subscriptions.create_index("endpoint", unique=True)
+    try:
+        await asyncio.to_thread(init_storage)
+        logger.info("Storage initialized")
+    except Exception as e:
+        logger.warning(f"Storage init failed: {e}")
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@noidi2d.it").lower()
     admin_pw = os.environ.get("ADMIN_PASSWORD", "AdminNoi2D!")
     existing = await db.users.find_one({"email": admin_email})

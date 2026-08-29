@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import { CalendarCheck, BrainCircuit, MessagesSquare, Users, FileText, Droplets, Pizza, Heart, Hand, ArrowUpRight } from "lucide-react";
-import { api, errMsg } from "@/lib/api";
+import { api, errMsg, requireOnline } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { playP2P } from "@/components/P2PLayer";
 import { Card } from "@/components/ui/card";
@@ -21,12 +21,23 @@ const ACTIONS = [
 const stagger = { show: { transition: { staggerChildren: 0.06 } } };
 const item = { hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0 } };
 
+const QUOTES = [
+  "Studiare stanca, ma ripetere l'anno stanca di più. 💪",
+  "La 2D non molla mai… tranne il venerdì alle 13:00.",
+  "Chi copia bene, in realtà ha solo studiato l'arte della velocità.",
+  "Oggi è un buon giorno per fingere di aver capito la spiegazione.",
+  "Ricorda: anche Einstein prendeva 4 in condotta. Probabilmente.",
+  "Un foglietto lanciato oggi è un ricordo domani. 🗒️",
+  "Caffè, appunti e un pizzico di panico: la ricetta della 2D.",
+];
+
 export default function Dashboard() {
   const { user } = useAuth();
   const [users, setUsers] = useState([]);
   const [events, setEvents] = useState([]);
   const [target, setTarget] = useState("");
   const [sending, setSending] = useState(false);
+  const [quote] = useState(() => QUOTES[Math.floor(Math.random() * QUOTES.length)]);
 
   useEffect(() => {
     api.get("/users").then((r) => setUsers(r.data)).catch(() => {});
@@ -35,6 +46,7 @@ export default function Dashboard() {
 
   const throwIt = async (type) => {
     if (!target) return toast.error("Scegli prima un compagno");
+    try { requireOnline(); } catch (err) { return toast.error(err.message); }
     setSending(true);
     playP2P(type);
     try {
@@ -48,9 +60,9 @@ export default function Dashboard() {
   };
 
   const tiles = [
-    { to: "/events", label: "Iscrizioni", icon: CalendarCheck, sub: `${events.length} eventi`, bg: "bg-primary text-primary-foreground" },
-    { to: "/study", label: "Aiuto Studio AI", icon: BrainCircuit, sub: "Interrogazioni & flashcard", bg: "bg-card" },
-    { to: "/chat", label: "Canale Pubblico", icon: MessagesSquare, sub: "Chat sicura & censurata", bg: "bg-card" },
+    { to: "/events", label: "Iscrizioni", icon: CalendarCheck, sub: `${events.length} eventi`, bg: "bg-primary text-primary-foreground border-0" },
+    { to: "/study", label: "Aiuto Studio AI", icon: BrainCircuit, sub: "Interrogazioni & flashcard", bg: "" },
+    { to: "/chat", label: "Canale Pubblico", icon: MessagesSquare, sub: "Chat sicura & censurata", bg: "" },
   ];
 
   return (
@@ -63,17 +75,27 @@ export default function Dashboard() {
         <p className="text-muted-foreground mt-2">Ecco cosa succede nella 2D oggi.</p>
       </motion.div>
 
+      <motion.div variants={item}>
+        <Card className="p-5 flex items-center gap-4 border-primary/30 bg-primary/5">
+          <div className="w-11 h-11 rounded-full bg-primary/15 text-primary grid place-items-center shrink-0 text-xl">💡</div>
+          <div>
+            <p className="text-xs tracking-widest uppercase font-bold text-primary">Pillola del giorno</p>
+            <p className="font-head font-semibold mt-0.5">{quote}</p>
+          </div>
+        </Card>
+      </motion.div>
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {tiles.map((t) => (
           <motion.div key={t.to} variants={item}>
             <Link to={t.to} data-testid={`tile-${t.label.toLowerCase().split(" ")[0]}`}>
               <Card className={`p-6 h-full border-border transition-all hover:-translate-y-1 hover:shadow-lg cursor-pointer ${t.bg}`}>
                 <div className="flex items-start justify-between">
-                  <t.icon size={28} />
+                  <t.icon size={28} className={t.bg.includes("primary") ? "" : "text-black"} />
                   <ArrowUpRight size={20} className="opacity-50" />
                 </div>
-                <h3 className="font-head text-xl font-semibold mt-6">{t.label}</h3>
-                <p className={`text-sm mt-1 ${t.bg.includes("primary") ? "text-primary-foreground/80" : "text-muted-foreground"}`}>{t.sub}</p>
+                <h3 className={`font-head text-xl font-semibold mt-6 ${t.bg.includes("primary") ? "" : "text-black"}`}>{t.label}</h3>
+                <p className={`text-sm mt-1 ${t.bg.includes("primary") ? "text-primary-foreground/80" : "text-black"}`}>{t.sub}</p>
               </Card>
             </Link>
           </motion.div>

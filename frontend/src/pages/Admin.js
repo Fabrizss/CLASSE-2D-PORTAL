@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, X, Shield, ShieldOff, Star, Trash2, Clock } from "lucide-react";
+import { Check, X, Shield, ShieldOff, Star, Trash2, Clock, Ban, Unlock } from "lucide-react";
 import { api, errMsg } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
 const STATUS = {
   pending: { label: "In attesa", cls: "bg-amber-500/15 text-amber-600 border-amber-500/30" },
@@ -17,10 +18,15 @@ const STATUS = {
 export default function Admin() {
   const { user } = useAuth();
   const [users, setUsers] = useState([]);
+  const [banTarget, setBanTarget] = useState(null);
   const load = () => api.get("/admin/users").then((r) => setUsers(r.data)).catch((e) => toast.error(errMsg(e)));
   useEffect(() => { load(); }, []);
 
   const act = async (fn, ok) => { try { await fn(); toast.success(ok); load(); } catch (e) { toast.error(errMsg(e)); } };
+
+  const doBan = (mode, hours) => act(() => api.post(`/admin/users/${banTarget.id}/ban`, { mode, hours }), "Utente sospeso").then(() => setBanTarget(null));
+
+  const isBanned = (u) => u.ban_permanent || (u.banned_until && u.banned_until > new Date().toISOString());
 
   const pending = users.filter((u) => u.status === "pending");
   const others = users.filter((u) => u.status !== "pending");
@@ -35,6 +41,7 @@ export default function Admin() {
           <span className="font-semibold truncate">{u.name}</span>
           {u.role === "admin" && <Badge variant="outline" className="rounded-full bg-primary/15 text-primary border-primary/30">Admin</Badge>}
           {u.can_create_events && u.role !== "admin" && <Badge variant="outline" className="rounded-full">Può creare eventi</Badge>}
+          {isBanned(u) && <Badge variant="outline" className="rounded-full bg-red-500/15 text-red-600 border-red-500/30">{u.ban_permanent ? "Bannato" : "Sospeso"}</Badge>}
           <Badge variant="outline" className={`rounded-full ${STATUS[u.status]?.cls}`}>{STATUS[u.status]?.label}</Badge>
         </div>
         <span className="text-xs text-muted-foreground truncate">{u.email}</span>
@@ -53,6 +60,14 @@ export default function Admin() {
             <Button size="icon" variant="ghost" title="Cambia ruolo"
               onClick={() => act(() => api.post(`/admin/users/${u.id}/role/${u.role === "admin" ? "member" : "admin"}`), "Ruolo aggiornato")}
               data-testid={`role-${u.id}`}>{u.role === "admin" ? <ShieldOff size={16} /> : <Shield size={16} />}</Button>
+            {isBanned(u) ? (
+              <Button size="icon" variant="ghost" title="Rimuovi ban"
+                onClick={() => act(() => api.post(`/admin/users/${u.id}/unban`), "Ban rimosso")}
+                data-testid={`unban-${u.id}`}><Unlock size={16} className="text-emerald-500" /></Button>
+            ) : (
+              <Button size="icon" variant="ghost" title="Banna"
+                onClick={() => setBanTarget(u)} data-testid={`ban-${u.id}`}><Ban size={16} className="text-amber-600" /></Button>
+            )}
             <Button size="icon" variant="ghost" title="Elimina"
               onClick={() => act(() => api.delete(`/admin/users/${u.id}`), "Eliminato")}
               data-testid={`delete-${u.id}`}><Trash2 size={16} className="text-destructive" /></Button>
@@ -83,6 +98,20 @@ export default function Admin() {
           {others.map((u) => <Row key={u.id} u={u} />)}
         </TabsContent>
       </Tabs>
+
+      <Dialog open={!!banTarget} onOpenChange={(o) => !o && setBanTarget(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle className="font-head">Sospendi {banTarget?.name}</DialogTitle>
+            <DialogDescription>Scegli la durata: l'utente non potrà accedere finché è sospeso.</DialogDescription>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">Scegli la durata della sospensione. L'utente non potrà accedere.</p>
+          <div className="grid gap-2 mt-2">
+            <Button variant="outline" className="rounded-full justify-start" onClick={() => doBan("temp", 24)} data-testid="ban-24h">Temporaneo · 24 ore</Button>
+            <Button variant="outline" className="rounded-full justify-start" onClick={() => doBan("temp", 168)} data-testid="ban-7d">Temporaneo · 7 giorni</Button>
+            <Button variant="destructive" className="rounded-full justify-start" onClick={() => doBan("perm", 0)} data-testid="ban-perm">Permanente</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
