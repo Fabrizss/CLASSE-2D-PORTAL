@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { LayoutDashboard, CalendarCheck, BrainCircuit, MessagesSquare, Newspaper, Shield, Download, Sun, Moon, LogOut, Menu, X, WifiOff } from "lucide-react";
+import { LayoutDashboard, CalendarCheck, BrainCircuit, MessagesSquare, Newspaper, StickyNote, Shield, Download, Sun, Moon, LogOut, Menu, X, WifiOff } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useOnline } from "@/hooks/useOnline";
 import { api } from "@/lib/api";
@@ -14,6 +14,7 @@ const NAV = [
   { to: "/events", label: "Iscrizioni", icon: CalendarCheck },
   { to: "/study", label: "Aiuto Studio", icon: BrainCircuit },
   { to: "/news", label: "News", icon: Newspaper },
+  { to: "/reminders", label: "Reminder", icon: StickyNote },
   { to: "/chat", label: "Canale", icon: MessagesSquare },
   { to: "/install", label: "Installa App", icon: Download },
 ];

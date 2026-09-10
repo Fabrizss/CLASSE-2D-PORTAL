@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, X, Shield, ShieldOff, Star, Trash2, Clock, Ban, Unlock } from "lucide-react";
+import { Check, X, Shield, ShieldOff, Star, Trash2, Clock, Ban, Unlock, MessageSquare } from "lucide-react";
 import { api, errMsg } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
@@ -19,10 +20,18 @@ export default function Admin() {
   const { user } = useAuth();
   const [users, setUsers] = useState([]);
   const [banTarget, setBanTarget] = useState(null);
+  const [avvisoTarget, setAvvisoTarget] = useState(null);
+  const [avvisoText, setAvvisoText] = useState("");
   const load = () => api.get("/admin/users").then((r) => setUsers(r.data)).catch((e) => toast.error(errMsg(e)));
   useEffect(() => { load(); }, []);
 
   const act = async (fn, ok) => { try { await fn(); toast.success(ok); load(); } catch (e) { toast.error(errMsg(e)); } };
+
+  const sendAvviso = async () => {
+    if (!avvisoText.trim()) return;
+    try { await api.post("/admin/avvisi", { user_id: avvisoTarget.id, text: avvisoText }); toast.success("Avviso inviato"); setAvvisoTarget(null); setAvvisoText(""); }
+    catch (e) { toast.error(errMsg(e)); }
+  };
 
   const doBan = (mode, hours) => act(() => api.post(`/admin/users/${banTarget.id}/ban`, { mode, hours }), "Utente sospeso").then(() => setBanTarget(null));
 
@@ -54,6 +63,8 @@ export default function Admin() {
           </>
         ) : u.id !== user.id && (
           <>
+            <Button size="icon" variant="ghost" title="Avviso privato"
+              onClick={() => setAvvisoTarget(u)} data-testid={`avviso-${u.id}`}><MessageSquare size={16} className="text-primary" /></Button>
             <Button size="icon" variant="ghost" title="Autorizza a creare eventi"
               onClick={() => act(() => api.post(`/admin/users/${u.id}/authorize/${u.can_create_events ? 0 : 1}`), "Aggiornato")}
               data-testid={`authorize-${u.id}`}><Star size={16} className={u.can_create_events ? "text-amber-500 fill-amber-500" : ""} /></Button>
@@ -110,6 +121,18 @@ export default function Admin() {
             <Button variant="outline" className="rounded-full justify-start" onClick={() => doBan("temp", 168)} data-testid="ban-7d">Temporaneo · 7 giorni</Button>
             <Button variant="destructive" className="rounded-full justify-start" onClick={() => doBan("perm", 0)} data-testid="ban-perm">Permanente</Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!avvisoTarget} onOpenChange={(o) => { if (!o) { setAvvisoTarget(null); setAvvisoText(""); } }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="font-head">Avviso privato a {avvisoTarget?.name}</DialogTitle>
+            <DialogDescription>Riceverà l'avviso in dashboard e una notifica push.</DialogDescription>
+          </DialogHeader>
+          <Textarea value={avvisoText} onChange={(e) => setAvvisoText(e.target.value)} data-testid="avviso-text"
+            placeholder="Scrivi l'avviso…" className="min-h-24" maxLength={500} />
+          <Button onClick={sendAvviso} data-testid="avviso-send" className="rounded-full w-full mt-2">Invia avviso</Button>
         </DialogContent>
       </Dialog>
     </div>

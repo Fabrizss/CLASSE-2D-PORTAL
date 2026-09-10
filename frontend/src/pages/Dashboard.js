@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { CalendarCheck, BrainCircuit, MessagesSquare, Users, FileText, Droplets, Pizza, Heart, Hand, ArrowUpRight } from "lucide-react";
+import { CalendarCheck, BrainCircuit, MessagesSquare, Users, FileText, Droplets, Pizza, Heart, Hand, ArrowUpRight, Megaphone } from "lucide-react";
 import { api, errMsg, requireOnline } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { playP2P } from "@/components/P2PLayer";
@@ -38,10 +38,12 @@ export default function Dashboard() {
   const [target, setTarget] = useState("");
   const [sending, setSending] = useState(false);
   const [quote] = useState(() => QUOTES[Math.floor(Math.random() * QUOTES.length)]);
+  const [avvisi, setAvvisi] = useState([]);
 
   useEffect(() => {
     api.get("/users").then((r) => setUsers(r.data)).catch(() => {});
     api.get("/events").then((r) => setEvents(r.data)).catch(() => {});
+    api.get("/avvisi").then((r) => setAvvisi(r.data)).catch(() => {});
   }, []);
 
   const throwIt = async (type) => {
@@ -84,6 +86,20 @@ export default function Dashboard() {
           </div>
         </Card>
       </motion.div>
+
+      {avvisi.length > 0 && (
+        <motion.div variants={item} className="space-y-3">
+          {avvisi.map((a) => (
+            <Card key={a.id} className="p-4 border-amber-500/40 bg-amber-500/10 flex items-start gap-3" data-testid={`avviso-${a.id}`}>
+              <Megaphone size={18} className="text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-xs font-bold text-amber-700">Avviso da {a.from_name}</p>
+                <p className="text-sm mt-0.5 whitespace-pre-wrap">{a.text}</p>
+              </div>
+            </Card>
+          ))}
+        </motion.div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {tiles.map((t) => (

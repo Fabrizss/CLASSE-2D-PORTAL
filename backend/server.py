@@ -135,6 +135,19 @@ class NewsIn(BaseModel):
     body: str
     attachments: List[dict] = []
 
+class InterrogazioneIn(BaseModel):
+    subject: Optional[str] = None
+    tipo: str = "orale"  # orale / scritta / pratica
+    num_domande: int = 0
+    voto: Optional[float] = None
+
+class VotoIn(BaseModel):
+    voto: Optional[float] = None
+
+class ReminderIn(BaseModel):
+    text: str
+    is_public: bool = False
+
 class SignupIn(BaseModel):
     option: Optional[str] = None
 
@@ -179,6 +192,15 @@ def censor(text: str) -> str:
 # ---------------- push ----------------
 async def send_push_to_all(title: str, body: str, url: str = "/"):
     subs = await db.push_subscriptions.find({}, {"_id": 0}).to_list(1000)
+    await _push(subs, title, body, url)
+
+async def send_push_to_admins(title: str, body: str, url: str = "/"):
+    admins = await db.users.find({"role": "admin"}, {"_id": 0, "id": 1}).to_list(100)
+    ids = [a["id"] for a in admins]
+    subs = await db.push_subscriptions.find({"user_id": {"$in": ids}}, {"_id": 0}).to_list(1000)
+    await _push(subs, title, body, url)
+
+async def _push(subs, title, body, url):
     payload = json.dumps({"title": title, "body": body, "url": url})
     for s in subs:
         try:
@@ -508,6 +530,90 @@ async def news_file(path: str, auth: str = Query(None), authorization: str = Hea
         raise HTTPException(401, "Token non valido")
     data, ct = await asyncio.to_thread(get_object, path)
     return Response(content=data, media_type=ct)
+
+# ---------------- interrogazioni ----------------
+@api.get("/interrogazioni")
+async def list_interrogazioni(u: dict = Depends(require_approved)):
+    return await db.interrogazioni.find({"user_id": u["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+@api.post("/interrogazioni")
+async def create_interrogazione(body: InterrogazioneIn, u: dict = Depends(require_approved)):
+    item = {"id": str(uuid.uuid4()), "user_id": u["id"], "subject": body.subject,
+            "tipo": body.tipo, "num_domande": body.num_domande, "voto": body.voto, "created_at": now_iso()}
+    await db.interrogazioni.insert_one(dict(item))
+    item.pop("_id", None)
+    return item
+
+@api.patch("/interrogazioni/{iid}")
+async def update_interrogazione(iid: str, body: VotoIn, u: dict = Depends(require_approved)):
+    await db.interrogazioni.update_one({"id": iid, "user_id": u["id"]}, {"$set": {"voto": body.voto}})
+    return {"ok": True}
+
+@api.delete("/interrogazioni/{iid}")
+async def delete_interrogazione(iid: str, u: dict = Depends(require_approved)):
+    await db.interrogazioni.delete_one({"id": iid, "user_id": u["id"]})
+    return {"ok": True}
+
+# ---------------- reminders ----------------
+@api.get("/reminders")
+async def list_reminders(u: dict = Depends(require_approved)):
+    items = await db.reminders.find(
+        {"$or": [{"is_public": True}, {"user_id": u["id"]}]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(300)
+    for r in items:
+        r["mine"] = r["user_id"] == u["id"]
+    return items
+
+@api.post("/reminders")
+async def create_reminder(body: ReminderIn, u: dict = Depends(require_approved)):
+    text = body.text.strip()[:500]
+    if not text:
+        raise HTTPException(400, "Testo vuoto")
+    item = {"id": str(uuid.uuid4()), "user_id": u["id"], "author_name": u["name"],
+            "avatar_color": u.get("avatar_color", "#7C3AED"), "text": text,
+            "is_public": body.is_public, "created_at": now_iso()}
+    await db.reminders.insert_one(dict(item))
+    item.pop("_id", None)
+    return {**item, "mine": True}
+
+@api.delete("/reminders/{rid}")
+async def delete_reminder(rid: str, u: dict = Depends(require_approved)):
+    r = await db.reminders.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Non trovato")
+    if r["user_id"] != u["id"] and u["role"] != "admin":
+        raise HTTPException(403, "Non autorizzato")
+    await db.reminders.delete_one({"id": rid})
+    return {"ok": True}
+
+@api.post("/reminders/{rid}/report")
+async def report_reminder(rid: str, u: dict = Depends(require_approved)):
+    r = await db.reminders.find_one({"id": rid})
+    if not r or not r.get("is_public"):
+        raise HTTPException(404, "Reminder pubblico non trovato")
+    asyncio.create_task(send_push_to_admins(
+        "Reminder segnalato", f"{u['name']} ha segnalato un reminder di {r['author_name']}", "/reminders"))
+    return {"ok": True}
+
+# ---------------- avvisi privati (admin -> utente) ----------------
+class AvvisoIn(BaseModel):
+    user_id: str
+    text: str
+
+@api.post("/admin/avvisi")
+async def send_avviso(body: AvvisoIn, u: dict = Depends(require_admin)):
+    item = {"id": str(uuid.uuid4()), "user_id": body.user_id, "from_name": u["name"],
+            "text": body.text.strip()[:500], "read": False, "created_at": now_iso()}
+    await db.avvisi.insert_one(dict(item))
+    subs = await db.push_subscriptions.find({"user_id": body.user_id}, {"_id": 0}).to_list(100)
+    asyncio.create_task(_push(subs, "Avviso dall'admin", item["text"], "/"))
+    return {"ok": True}
+
+@api.get("/avvisi")
+async def my_avvisi(u: dict = Depends(require_approved)):
+    items = await db.avvisi.find({"user_id": u["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    await db.avvisi.update_many({"user_id": u["id"], "read": False}, {"$set": {"read": True}})
+    return items
 
 # ---------------- P2P actions ----------------
 @api.post("/actions")

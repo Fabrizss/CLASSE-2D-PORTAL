@@ -1,12 +1,13 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { Upload, Send, Sparkles, RotateCw, GraduationCap, Layers, Loader2 } from "lucide-react";
+import { Upload, Send, Sparkles, RotateCw, GraduationCap, Layers, Loader2, Save, Trash2, ClipboardList } from "lucide-react";
 import { api, errMsg } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 
 const BANNER = "https://images.unsplash.com/photo-1501504905252-473c47e087f8?crop=entropy&cs=srgb&fm=jpg&q=85&w=1600";
 
@@ -27,6 +28,32 @@ export default function Study() {
   const [cards, setCards] = useState([]);
   const [genLoading, setGenLoading] = useState(false);
   const [flipped, setFlipped] = useState({});
+
+  // registro interrogazioni
+  const [regs, setRegs] = useState([]);
+  const [regForm, setRegForm] = useState({ tipo: "orale", num_domande: "", voto: "" });
+  const loadRegs = () => api.get("/interrogazioni").then((r) => setRegs(r.data)).catch(() => {});
+  useEffect(() => { loadRegs(); }, []);
+
+  const saveReg = async () => {
+    try {
+      await api.post("/interrogazioni", {
+        subject: subject || null, tipo: regForm.tipo,
+        num_domande: parseInt(regForm.num_domande || 0, 10),
+        voto: regForm.voto === "" ? null : parseFloat(regForm.voto),
+      });
+      toast.success("Interrogazione salvata");
+      setRegForm({ tipo: "orale", num_domande: "", voto: "" });
+      loadRegs();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+  const setVoto = async (id, voto) => {
+    setRegs((rs) => rs.map((r) => r.id === id ? { ...r, voto } : r));
+    try { await api.patch(`/interrogazioni/${id}`, { voto: voto === "" ? null : parseFloat(voto) }); } catch (e) { toast.error(errMsg(e)); }
+  };
+  const delReg = async (id) => {
+    try { await api.delete(`/interrogazioni/${id}`); setRegs((rs) => rs.filter((r) => r.id !== id)); } catch (e) { toast.error(errMsg(e)); }
+  };
 
   const upload = async (e) => {
     const f = e.target.files?.[0];
@@ -148,6 +175,52 @@ export default function Study() {
                 placeholder="Scrivi la tua risposta…" className="rounded-full" />
               <Button type="submit" disabled={thinking} data-testid="quiz-send-btn" size="icon" className="rounded-full shrink-0"><Send size={16} /></Button>
             </form>
+          </Card>
+
+          <Card className="p-5 sm:p-6 border-border mt-6">
+            <div className="flex items-center gap-2 mb-1">
+              <ClipboardList size={18} className="text-primary" />
+              <h3 className="font-head text-xl font-semibold">Registro interrogazioni</h3>
+            </div>
+            <p className="text-muted-foreground text-sm mb-4">Salva le tue interrogazioni e aggiungi il voto quando lo ricevi.</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-end">
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground">Tipo</label>
+                <Select value={regForm.tipo} onValueChange={(v) => setRegForm({ ...regForm, tipo: v })}>
+                  <SelectTrigger className="mt-1" data-testid="reg-tipo-select"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="orale">Orale</SelectItem>
+                    <SelectItem value="scritta">Scritta</SelectItem>
+                    <SelectItem value="pratica">Pratica</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground">N. domande</label>
+                <Input type="number" min="0" value={regForm.num_domande} data-testid="reg-num-input"
+                  onChange={(e) => setRegForm({ ...regForm, num_domande: e.target.value })} className="mt-1" placeholder="0" />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground">Voto (opz.)</label>
+                <Input type="number" step="0.25" value={regForm.voto} data-testid="reg-voto-input"
+                  onChange={(e) => setRegForm({ ...regForm, voto: e.target.value })} className="mt-1" placeholder="—" />
+              </div>
+              <Button onClick={saveReg} data-testid="reg-save-btn" className="rounded-full gap-2"><Save size={16} /> Salva</Button>
+            </div>
+            <div className="mt-5 space-y-2">
+              {regs.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">Nessuna interrogazione salvata.</p>}
+              {regs.map((r) => (
+                <div key={r.id} className="flex items-center gap-3 p-3 rounded-xl border border-border" data-testid={`reg-row-${r.id}`}>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium truncate">{r.subject || "Senza argomento"}</p>
+                    <p className="text-xs text-muted-foreground capitalize">{r.tipo} · {r.num_domande} domande · {new Date(r.created_at).toLocaleDateString("it-IT")}</p>
+                  </div>
+                  <Input type="number" step="0.25" value={r.voto ?? ""} data-testid={`reg-voto-edit-${r.id}`}
+                    onChange={(e) => setVoto(r.id, e.target.value)} placeholder="voto" className="w-20 h-9 text-center" />
+                  <button onClick={() => delReg(r.id)} data-testid={`reg-del-${r.id}`} className="text-muted-foreground hover:text-destructive"><Trash2 size={16} /></button>
+                </div>
+              ))}
+            </div>
           </Card>
         </TabsContent>
 
