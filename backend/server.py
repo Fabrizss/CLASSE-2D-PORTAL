@@ -21,6 +21,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr
 from pywebpush import webpush, WebPushException
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from groq import AsyncGroq
 from pypdf import PdfReader
 import io
 
@@ -39,6 +40,62 @@ VAPID_PUBLIC_KEY = os.environ.get('VAPID_PUBLIC_KEY')
 VAPID_CLAIM_EMAIL = os.environ.get('VAPID_CLAIM_EMAIL', 'mailto:admin@noidi2d.it')
 resend.api_key = os.environ.get('RESEND_API_KEY') or None
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
+
+# ---------------- groq (AI configurabile da admin) ----------------
+GROQ_CHAT_MODEL = "openai/gpt-oss-120b"
+GROQ_FLASHCARD_MODEL = "openai/gpt-oss-20b"
+GROQ_MODERATION_MODEL = "openai/gpt-oss-safeguard-20b"
+_groq_key_cache = {"key": None}
+
+async def load_ai_settings():
+    doc = await db.app_settings.find_one({"_id": "ai"})
+    _groq_key_cache["key"] = (doc or {}).get("groq_api_key") or None
+
+def get_groq_key():
+    return _groq_key_cache["key"]
+
+async def groq_chat_reply(messages: list) -> str:
+    client = AsyncGroq(api_key=get_groq_key())
+    try:
+        resp = await client.chat.completions.create(model=GROQ_CHAT_MODEL, messages=messages, temperature=0.4, max_completion_tokens=800)
+        return resp.choices[0].message.content or ""
+    finally:
+        await client.close()
+
+async def groq_json_reply(messages: list, model: str = GROQ_FLASHCARD_MODEL) -> str:
+    client = AsyncGroq(api_key=get_groq_key())
+    try:
+        resp = await client.chat.completions.create(
+            model=model, messages=messages, temperature=0.2, max_completion_tokens=2000,
+            response_format={"type": "json_object"},
+        )
+        return resp.choices[0].message.content or "{}"
+    finally:
+        await client.close()
+
+async def moderate_text(text: str) -> bool:
+    """Ritorna True se il messaggio va bloccato dalla moderazione AI (Groq). Fail-open se Groq non configurato/non risponde."""
+    key = get_groq_key()
+    if not key:
+        return False
+    policy = ("Sei un moderatore per una chat di studenti di una scuola superiore italiana. "
+              'Classifica il messaggio. Rispondi SOLO con JSON: {"allowed": true} oppure {"allowed": false}. '
+              "Blocca solo contenuti gravi: minacce, bullismo, contenuti sessuali, odio, autolesionismo, istigazione a reati. "
+              "Linguaggio scolastico normale, sfoghi leggeri o ironia vanno sempre permessi (allowed=true).")
+    client = AsyncGroq(api_key=key)
+    try:
+        resp = await asyncio.wait_for(client.chat.completions.create(
+            model=GROQ_MODERATION_MODEL,
+            messages=[{"role": "system", "content": policy}, {"role": "user", "content": text[:1000]}],
+            response_format={"type": "json_object"}, temperature=0, max_completion_tokens=50,
+        ), timeout=6)
+        data = json.loads(resp.choices[0].message.content or "{}")
+        return not data.get("allowed", True)
+    except Exception as e:
+        logger.warning(f"moderazione AI fallita: {e}")
+        return False
+    finally:
+        await client.close()
 
 app = FastAPI()
 api = APIRouter(prefix="/api")
@@ -174,6 +231,38 @@ class FlashcardIn(BaseModel):
 
 class SubscribeIn(BaseModel):
     subscription: dict
+
+class AISettingsIn(BaseModel):
+    api_key: str = ""
+
+class RepIn(BaseModel):
+    user_id: str
+
+class TeamIn(BaseModel):
+    name: str
+    sport_type: str
+
+class TeamMemberIn(BaseModel):
+    user_id: str
+
+class PollIn(BaseModel):
+    question: str
+    options: List[str]
+
+class PollVoteIn(BaseModel):
+    option: str
+
+class CourseMessageIn(BaseModel):
+    text: str
+
+SPORT_TYPES = {
+    "calcio7": {"label": "Calcio a 7", "max": 7},
+    "calcio11": {"label": "Calcio a 11", "max": 11},
+    "basket": {"label": "Basket", "max": 5},
+    "volley3": {"label": "Volley 3x3", "max": 3},
+    "pallavolo": {"label": "Pallavolo", "max": 6},
+    "generico": {"label": "Sport generico", "max": None},
+}
 
 # ---------------- censorship ----------------
 BAD_WORDS = [
@@ -343,6 +432,17 @@ async def unban_user(uid: str, u: dict = Depends(require_admin)):
     await db.users.update_one({"id": uid}, {"$set": {"ban_permanent": False, "banned_until": None}})
     return {"ok": True}
 
+@api.get("/admin/ai-settings")
+async def get_ai_settings(u: dict = Depends(require_admin)):
+    return {"groq_configured": bool(get_groq_key())}
+
+@api.post("/admin/ai-settings")
+async def save_ai_settings(body: AISettingsIn, u: dict = Depends(require_admin)):
+    key = body.api_key.strip()
+    await db.app_settings.update_one({"_id": "ai"}, {"$set": {"groq_api_key": key or None}}, upsert=True)
+    await load_ai_settings()
+    return {"groq_configured": bool(key)}
+
 # ---------------- events / iscrizioni ----------------
 @api.get("/events")
 async def get_events(u: dict = Depends(require_approved)):
@@ -431,6 +531,176 @@ async def delete_event(eid: str, u: dict = Depends(require_approved)):
     await db.events.delete_one({"id": eid})
     return {"ok": True}
 
+# ---------------- pannello corso (rappresentante, squadre, sondaggi, chat per evento) ----------------
+def event_participant_or_admin(ev: dict, u: dict) -> bool:
+    if u["role"] == "admin" or ev["created_by"] == u["id"]:
+        return True
+    return any(s["user_id"] == u["id"] for s in ev.get("signups", []))
+
+async def get_event_or_404(eid: str) -> dict:
+    ev = await db.events.find_one({"id": eid})
+    if not ev:
+        raise HTTPException(404, "Iscrizione non trovata")
+    return ev
+
+async def can_manage_course(eid: str, ev: dict, u: dict) -> bool:
+    if u["role"] == "admin" or ev["created_by"] == u["id"]:
+        return True
+    rep = await db.course_reps.find_one({"event_id": eid})
+    return bool(rep and rep["user_id"] == u["id"])
+
+@api.get("/events/{eid}/course")
+async def get_course(eid: str, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not event_participant_or_admin(ev, u):
+        raise HTTPException(403, "Devi essere iscritto per accedere al pannello corso")
+    rep = await db.course_reps.find_one({"event_id": eid}, {"_id": 0})
+    teams = await db.course_teams.find({"event_id": eid}, {"_id": 0}).to_list(100)
+    polls = await db.course_polls.find({"event_id": eid}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    for p in polls:
+        votes = p.pop("votes", [])
+        p["vote_counts"] = {opt: sum(1 for v in votes if v["option"] == opt) for opt in p["options"]}
+        p["total_votes"] = len(votes)
+        mine = next((v for v in votes if v["user_id"] == u["id"]), None)
+        p["my_vote"] = mine["option"] if mine else None
+    return {
+        "rep": rep, "teams": teams, "polls": polls,
+        "can_manage": await can_manage_course(eid, ev, u),
+        "sport_types": SPORT_TYPES, "participants": ev.get("signups", []),
+        "event_title": ev.get("title"), "event_urgency": ev.get("urgency"),
+    }
+
+@api.post("/events/{eid}/course/rep")
+async def set_course_rep(eid: str, body: RepIn, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not (u["role"] == "admin" or ev["created_by"] == u["id"]):
+        raise HTTPException(403, "Solo admin o organizzatore")
+    target = next((s for s in ev.get("signups", []) if s["user_id"] == body.user_id), None)
+    if not target:
+        raise HTTPException(400, "L'utente deve essere iscritto all'evento")
+    await db.course_reps.update_one(
+        {"event_id": eid},
+        {"$set": {"event_id": eid, "user_id": body.user_id, "name": target["name"], "set_at": now_iso()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+@api.delete("/events/{eid}/course/rep")
+async def remove_course_rep(eid: str, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not (u["role"] == "admin" or ev["created_by"] == u["id"]):
+        raise HTTPException(403, "Solo admin o organizzatore")
+    await db.course_reps.delete_one({"event_id": eid})
+    return {"ok": True}
+
+@api.post("/events/{eid}/course/teams")
+async def create_team(eid: str, body: TeamIn, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not await can_manage_course(eid, ev, u):
+        raise HTTPException(403, "Solo admin, organizzatore o capitano")
+    if body.sport_type not in SPORT_TYPES:
+        raise HTTPException(400, "Tipo sport non valido")
+    team = {"id": str(uuid.uuid4()), "event_id": eid, "name": body.name.strip()[:60],
+            "sport_type": body.sport_type, "members": [], "created_at": now_iso()}
+    await db.course_teams.insert_one(dict(team))
+    team.pop("_id", None)
+    return team
+
+@api.delete("/events/{eid}/course/teams/{tid}")
+async def delete_team(eid: str, tid: str, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not await can_manage_course(eid, ev, u):
+        raise HTTPException(403, "Non autorizzato")
+    await db.course_teams.delete_one({"id": tid, "event_id": eid})
+    return {"ok": True}
+
+@api.post("/events/{eid}/course/teams/{tid}/members")
+async def add_team_member(eid: str, tid: str, body: TeamMemberIn, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not await can_manage_course(eid, ev, u):
+        raise HTTPException(403, "Non autorizzato")
+    team = await db.course_teams.find_one({"id": tid, "event_id": eid})
+    if not team:
+        raise HTTPException(404, "Squadra non trovata")
+    participant = next((s for s in ev.get("signups", []) if s["user_id"] == body.user_id), None)
+    if not participant:
+        raise HTTPException(400, "L'utente deve essere iscritto all'evento")
+    if any(m["user_id"] == body.user_id for m in team.get("members", [])):
+        raise HTTPException(400, "Già in squadra")
+    cap = SPORT_TYPES[team["sport_type"]]["max"]
+    if cap and len(team.get("members", [])) >= cap:
+        raise HTTPException(400, f"Squadra piena (massimo {cap})")
+    await db.course_teams.update_one({"id": tid}, {"$push": {"members": {"user_id": body.user_id, "name": participant["name"]}}})
+    return {"ok": True}
+
+@api.delete("/events/{eid}/course/teams/{tid}/members/{uid}")
+async def remove_team_member(eid: str, tid: str, uid: str, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not await can_manage_course(eid, ev, u):
+        raise HTTPException(403, "Non autorizzato")
+    await db.course_teams.update_one({"id": tid}, {"$pull": {"members": {"user_id": uid}}})
+    return {"ok": True}
+
+@api.post("/events/{eid}/course/polls")
+async def create_poll(eid: str, body: PollIn, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not await can_manage_course(eid, ev, u):
+        raise HTTPException(403, "Non autorizzato")
+    opts = [o.strip() for o in body.options if o.strip()]
+    if len(opts) < 2:
+        raise HTTPException(400, "Servono almeno 2 opzioni")
+    poll = {"id": str(uuid.uuid4()), "event_id": eid, "question": body.question.strip()[:200],
+            "options": opts, "votes": [], "created_by": u["id"], "created_at": now_iso()}
+    await db.course_polls.insert_one(dict(poll))
+    return {"ok": True}
+
+@api.post("/events/{eid}/course/polls/{pid}/vote")
+async def vote_poll(eid: str, pid: str, body: PollVoteIn, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not event_participant_or_admin(ev, u):
+        raise HTTPException(403, "Devi essere iscritto per votare")
+    poll = await db.course_polls.find_one({"id": pid, "event_id": eid})
+    if not poll:
+        raise HTTPException(404, "Sondaggio non trovato")
+    if body.option not in poll["options"]:
+        raise HTTPException(400, "Opzione non valida")
+    votes = [v for v in poll.get("votes", []) if v["user_id"] != u["id"]]
+    votes.append({"user_id": u["id"], "option": body.option})
+    await db.course_polls.update_one({"id": pid}, {"$set": {"votes": votes}})
+    return {"ok": True}
+
+@api.delete("/events/{eid}/course/polls/{pid}")
+async def delete_poll(eid: str, pid: str, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not await can_manage_course(eid, ev, u):
+        raise HTTPException(403, "Non autorizzato")
+    await db.course_polls.delete_one({"id": pid, "event_id": eid})
+    return {"ok": True}
+
+@api.get("/events/{eid}/course/chat")
+async def get_course_chat(eid: str, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not event_participant_or_admin(ev, u):
+        raise HTTPException(403, "Devi essere iscritto per vedere la chat")
+    return await db.course_chat.find({"event_id": eid}, {"_id": 0}).sort("created_at", 1).to_list(300)
+
+@api.post("/events/{eid}/course/chat")
+async def post_course_chat(eid: str, body: CourseMessageIn, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not event_participant_or_admin(ev, u):
+        raise HTTPException(403, "Devi essere iscritto per scrivere")
+    text = body.text.strip()[:500]
+    if not text:
+        raise HTTPException(400, "Messaggio vuoto")
+    clean = censor(text)
+    blocked = await moderate_text(clean)
+    if blocked:
+        clean = "*" * len(clean)
+    msg = {"id": str(uuid.uuid4()), "event_id": eid, "user_id": u["id"], "user_name": u["name"],
+           "avatar_color": u.get("avatar_color", "#7C3AED"), "text": clean, "created_at": now_iso()}
+    await db.course_chat.insert_one(dict(msg))
+    return msg
+
 # ---------------- public chat ----------------
 @api.get("/chat/messages")
 async def get_messages(u: dict = Depends(require_approved)):
@@ -443,10 +713,13 @@ async def post_message(body: MessageIn, u: dict = Depends(require_approved)):
     if not text:
         raise HTTPException(400, "Messaggio vuoto")
     clean = censor(text)
+    blocked = await moderate_text(clean)
+    if blocked:
+        clean = "*" * len(clean)
     msg = {
         "id": str(uuid.uuid4()), "user_id": u["id"], "user_name": u["name"],
         "avatar_color": u.get("avatar_color", "#7C3AED"),
-        "text": clean, "censored": clean != text, "created_at": now_iso(),
+        "text": clean, "censored": clean != text or blocked, "created_at": now_iso(),
     }
     await db.chat_messages.insert_one(dict(msg))
     return msg
@@ -685,23 +958,37 @@ async def gen_flashcards(body: FlashcardIn, u: dict = Depends(require_approved))
         source = f"Argomento: {body.topic}"
     else:
         raise HTTPException(400, "Fornisci un argomento o un file")
-    chat = make_chat(f"fc-{uuid.uuid4()}",
-        "Sei un tutor italiano. Genera flashcard di studio. Rispondi SOLO con JSON valido.")
+    sys_prompt = 'Sei un tutor italiano. Genera flashcard di studio. Rispondi SOLO con JSON valido: {"cards": [{"q":"domanda","a":"risposta"}]}.'
     prompt = (f"Crea {body.count} flashcard dallo studio seguente. "
-              f'Rispondi SOLO con un array JSON: [{{"q":"domanda","a":"risposta"}}]. '
+              f'Rispondi SOLO con un oggetto JSON: {{"cards": [{{"q":"domanda","a":"risposta"}}]}}. '
               f"Domande brevi e chiare in italiano.\n\nMATERIALE:\n{source}")
-    try:
-        resp = await chat.send_message(UserMessage(text=prompt))
-    except Exception as e:
-        raise HTTPException(500, f"Errore AI: {e}")
-    raw = resp.strip()
-    m = re.search(r"\[.*\]", raw, re.DOTALL)
-    if m:
-        raw = m.group(0)
-    try:
-        cards = json.loads(raw)
-    except Exception:
-        raise HTTPException(500, "AI non ha restituito flashcard valide, riprova")
+    if get_groq_key():
+        try:
+            raw = await groq_json_reply([
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": prompt},
+            ])
+        except Exception as e:
+            raise HTTPException(500, f"Errore AI: {e}")
+        try:
+            cards = json.loads(raw).get("cards", [])
+        except Exception:
+            raise HTTPException(500, "AI non ha restituito flashcard valide, riprova")
+    else:
+        chat = make_chat(f"fc-{uuid.uuid4()}", sys_prompt)
+        try:
+            resp = await chat.send_message(UserMessage(text=prompt))
+        except Exception as e:
+            raise HTTPException(500, f"Errore AI: {e}")
+        raw = resp.strip()
+        m = re.search(r"\[.*\]|\{.*\}", raw, re.DOTALL)
+        if m:
+            raw = m.group(0)
+        try:
+            parsed = json.loads(raw)
+            cards = parsed if isinstance(parsed, list) else parsed.get("cards", [])
+        except Exception:
+            raise HTTPException(500, "AI non ha restituito flashcard valide, riprova")
     return {"cards": cards[:body.count]}
 
 @api.post("/study/chat")
@@ -710,12 +997,22 @@ async def study_chat(body: StudyChatIn, u: dict = Depends(require_approved)):
     system = (f"Sei un professore italiano severo ma incoraggiante che interroga uno studente su {subj}. "
               "Fai UNA domanda alla volta, valuta la risposta precedente in modo costruttivo con un voto da 1 a 10, "
               "poi poni la domanda successiva. Sii conciso e parla in italiano.")
-    chat = make_chat(f"study-{body.session_id}", system)
-    try:
-        resp = await chat.send_message(UserMessage(text=body.message))
-    except Exception as e:
-        raise HTTPException(500, f"Errore AI: {e}")
-    return {"reply": resp}
+    if get_groq_key():
+        session = await db.study_sessions.find_one({"session_id": body.session_id}) or {"messages": []}
+        messages = [{"role": "system", "content": system}] + session["messages"] + [{"role": "user", "content": body.message}]
+        try:
+            reply = await groq_chat_reply(messages)
+        except Exception as e:
+            raise HTTPException(500, f"Errore AI: {e}")
+        new_messages = (session["messages"] + [{"role": "user", "content": body.message}, {"role": "assistant", "content": reply}])[-20:]
+        await db.study_sessions.update_one({"session_id": body.session_id}, {"$set": {"messages": new_messages}}, upsert=True)
+    else:
+        chat = make_chat(f"study-{body.session_id}", system)
+        try:
+            reply = await chat.send_message(UserMessage(text=body.message))
+        except Exception as e:
+            raise HTTPException(500, f"Errore AI: {e}")
+    return {"reply": reply}
 
 # ---------------- push ----------------
 @api.get("/push/vapid-public")
@@ -754,6 +1051,7 @@ async def startup():
         logger.info("Storage initialized")
     except Exception as e:
         logger.warning(f"Storage init failed: {e}")
+    await load_ai_settings()
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@noidi2d.it").lower()
     admin_pw = os.environ.get("ADMIN_PASSWORD", "AdminNoi2D!")
     existing = await db.users.find_one({"email": admin_email})

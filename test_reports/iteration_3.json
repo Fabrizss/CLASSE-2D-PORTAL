@@ -1,0 +1,31 @@
+{
+  "summary": "Backend + Frontend testing of new features: (1) Groq admin-configurable AI key with Guide e Sistemi accordion; (2) Course Panel (rep/teams/polls/chat) per event. Backend: 21/21 pytest cases pass on /api/admin/ai-settings and /api/events/{eid}/course/* including permission checks (admin/organizer/rep captain, outsider 403, non-participant rep/polls guards, sport type + duplicate + capacity validations, poll vote change & counts, participant-only chat). Frontend: Guide e Sistemi flow verified end-to-end (badge Gemini→Groq attivo→Gemini, GET /admin/ai-settings groq_configured toggles, accordion 3 sezioni, 'Copia script' shows 'Copiato negli appunti' toast). Course Panel end-to-end verified as admin/organizer: trophy icon (course-panel-link-{eventId}) on Events card navigates to /events/{id}/corso; Teams tab creates team with sport-select (all 6 sport formats listed with correct max labels), Polls tab creates poll and votes, Course chat sends message and shows course-chat-message row, Rep tab assigns rappresentante via select and shows Rimuovi. Regression: existing flashcards/study-chat/public-chat still work with default Gemini path. No blocking bugs found.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_course_and_ai.py",
+    "/app/test_reports/pytest/course_and_ai.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py: POST /api/admin/ai-settings uses empty string api_key as the removal signal (frontend sends { api_key: '' } from remove-groq-key-btn). Works but a DELETE /api/admin/ai-settings would be cleaner REST and easier to reason about. Not blocking.",
+    "server.py: get_ai_settings only returns groq_configured boolean and never leaks the stored key — correct security posture. groq_api_key stored in Mongo `app_settings` collection in plaintext; if this app ever goes multi-tenant or gets DB exposure, consider encrypting-at-rest (Fernet) since the key grants LLM API spend. Not blocking for a class portal.",
+    "server.py can_manage_course auto-promotes a rappresentante to captain (can create teams/polls/delete). This matches the spec ('creati da admin/organizzatore/capitano'). Good.",
+    "server.py POST /events/{eid}/course/polls returns {ok:true} instead of the poll object; the frontend refetches, so it works. Minor DRY/UX: returning the poll would remove one round-trip.",
+    "CoursePanel.js/create-team uses SPORT_TYPES from GET /events/{eid}/course response — labels & max are server-side, so DRY is respected. Good.",
+    "Events.js trophy icon is rendered when the user is a participant OR can manage — matches backend guard. No unauthorized flashes observed.",
+    "GuideSistemi.js copy-supabase-sql uses navigator.clipboard.writeText; on browsers without clipboard permission it will throw silently. Consider a document.execCommand('copy') fallback. Non-blocking."
+  ],
+  "updated_files": ["/app/backend/tests/test_course_and_ai.py"],
+  "success_rate": { "backend": "100% (21/21)", "frontend": "100% for the new features tested" },
+  "test_credentials": "Admin: admin@noidi2d.it / AdminNoi2D! (auto-seeded). Test members created per run with 'course_' / 'test_member_' / 'course_ui_' prefixes and pw MemberPass1!/MemberPass123!.",
+  "seed_data_creation": "Backend tests create TEST_Course_* events + a few members and clean up the events at teardown (members remain approved but harmless). Frontend test created 1 TEST_Corso_UI_<ts> event, 1 team 'Squadra Alpha' (calcio7), 1 poll 'Pizza o Sushi?', 1 course chat message and 1 rep assignment on that event — all live under admin's ownership; cleanup left to main agent if desired.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "New endpoints/testids stable: /api/admin/ai-settings (GET/POST with {api_key}); /api/events/{eid}/course (GET), /course/rep (POST body {user_id}, DELETE), /course/teams (POST {name,sport_type}, DELETE /{tid}), /course/teams/{tid}/members (POST {user_id}, DELETE /{uid}), /course/polls (POST {question,options[]}, DELETE /{pid}), /course/polls/{pid}/vote (POST {option}), /course/chat (GET/POST {text}). Frontend testids: tab-guide, ai-status-badge, groq-key-input, save-groq-key-btn, remove-groq-key-btn, guide-github-trigger, guide-deploy-trigger, guide-supabase-trigger, copy-supabase-sql; course-panel-link-{eid}; tab-rep/rep-select/remove-rep-btn/course-rep-info/no-rep-msg; tab-teams/new-team-btn/team-name-input/team-sport-select/create-team-submit/team-card-{tid}/add-member-select-{tid}/team-member-{tid}-{uid}/delete-team-{tid}; tab-polls/new-poll-btn/poll-question-input/poll-options-input/create-poll-submit/poll-card-{pid}/vote-{pid}-{opt}/delete-poll-{pid}; tab-course-chat/course-chat-input/course-chat-send-btn/course-chat-message. Note: POST /api/events/{eid}/signup NOW requires a JSON body (empty {} is OK for events without options); an empty body causes 422.",
+  "rca of the issue": "No blocking issues. Only observation: /api/events/{eid}/signup requires a JSON body (SignupIn model); a POST with no body returns 422. The frontend already sends the correct body, but external clients/tests should send {} or {option: '...'}."
+}

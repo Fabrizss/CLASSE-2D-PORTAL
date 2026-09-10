@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { Plus, MapPin, Clock, Users, Trash2, Bell, Check, Eye, ListChecks } from "lucide-react";
+import { Plus, MapPin, Clock, Users, Trash2, Bell, Check, Eye, ListChecks, Trophy } from "lucide-react";
 import { api, errMsg, requireOnline } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { enablePush } from "@/lib/push";
@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { Link } from "react-router-dom";
 
 const BANNER = "https://images.pexels.com/photos/20059728/pexels-photo-20059728.jpeg";
 const URGENCY = {
@@ -159,6 +160,10 @@ export default function Events() {
                 <div className="flex items-start justify-between gap-3">
                   <Badge variant="outline" className={`rounded-full ${u.cls}`}>{u.label}</Badge>
                   <div className="flex items-center gap-2">
+                    {(e.signed_up || e.can_manage) && (
+                      <Link to={`/events/${e.id}/corso`} data-testid={`course-panel-link-${e.id}`} title="Pannello corso"
+                        className="text-muted-foreground hover:text-primary transition-colors"><Trophy size={16} /></Link>
+                    )}
                     {e.can_manage && (
                       <button onClick={() => openSignups(e)} data-testid={`view-signups-${e.id}`} title="Vedi iscritti"
                         className="text-muted-foreground hover:text-primary transition-colors"><Eye size={16} /></button>

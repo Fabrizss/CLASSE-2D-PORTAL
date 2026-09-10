@@ -116,7 +116,7 @@ export default function Study() {
         <div className="absolute inset-0 bg-gradient-to-tr from-primary/80 via-primary/40 to-transparent" />
         <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent" />
         <div className="absolute inset-0 p-6 sm:p-10 flex flex-col justify-end text-white">
-          <p className="text-xs tracking-[0.25em] uppercase font-bold opacity-90 flex items-center gap-1.5"><Sparkles size={14} /> Il tuo tutor personale · Gemini AI</p>
+          <p className="text-xs tracking-[0.25em] uppercase font-bold opacity-90 flex items-center gap-1.5"><Sparkles size={14} /> Il tuo tutor personale · AI</p>
           <h1 className="font-head text-4xl sm:text-5xl font-black tracking-tight mt-1">Aiuto Studio</h1>
           <p className="text-white/85 mt-2 max-w-lg text-sm sm:text-base">Fatti interrogare come in classe, trasforma i tuoi appunti in flashcard e arriva preparato a ogni verifica.</p>
         </div>

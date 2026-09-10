@@ -6,6 +6,7 @@ import Layout from "@/components/Layout";
 import Auth from "@/pages/Auth";
 import Dashboard from "@/pages/Dashboard";
 import Events from "@/pages/Events";
+import CoursePanel from "@/pages/CoursePanel";
 import Study from "@/pages/Study";
 import Chat from "@/pages/Chat";
 import News from "@/pages/News";
@@ -38,6 +39,7 @@ function Shell() {
       <Route path="/auth" element={user ? <Navigate to="/" replace /> : <Auth />} />
       <Route path="/" element={<Protected><Dashboard /></Protected>} />
       <Route path="/events" element={<Protected><Events /></Protected>} />
+      <Route path="/events/:id/corso" element={<Protected><CoursePanel /></Protected>} />
       <Route path="/study" element={<Protected><Study /></Protected>} />
       <Route path="/chat" element={<Protected><Chat /></Protected>} />
       <Route path="/news" element={<Protected><News /></Protected>} />

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, X, Shield, ShieldOff, Star, Trash2, Clock, Ban, Unlock, MessageSquare } from "lucide-react";
+import { Check, X, Shield, ShieldOff, Star, Trash2, Clock, Ban, Unlock, MessageSquare, BookOpen } from "lucide-react";
 import { api, errMsg } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Card } from "@/components/ui/card";
@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { GuideSistemi } from "@/components/GuideSistemi";
 
 const STATUS = {
   pending: { label: "In attesa", cls: "bg-amber-500/15 text-amber-600 border-amber-500/30" },
@@ -100,6 +101,7 @@ export default function Admin() {
             <Clock size={15} /> In attesa {pending.length > 0 && <span className="ml-1 bg-primary text-primary-foreground rounded-full px-1.5 text-xs">{pending.length}</span>}
           </TabsTrigger>
           <TabsTrigger value="all" data-testid="tab-all">Tutti i membri</TabsTrigger>
+          <TabsTrigger value="guide" data-testid="tab-guide" className="gap-2"><BookOpen size={15} /> Guide e Sistemi</TabsTrigger>
         </TabsList>
         <TabsContent value="pending" className="mt-6 space-y-3">
           {pending.length === 0 && <p className="text-muted-foreground text-center py-12 text-sm">Nessuna richiesta in attesa.</p>}
@@ -107,6 +109,9 @@ export default function Admin() {
         </TabsContent>
         <TabsContent value="all" className="mt-6 space-y-3">
           {others.map((u) => <Row key={u.id} u={u} />)}
+        </TabsContent>
+        <TabsContent value="guide" className="mt-6">
+          <GuideSistemi />
         </TabsContent>
       </Tabs>
 
