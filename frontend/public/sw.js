@@ -1,5 +1,5 @@
-const SHELL_CACHE = "noi-shell-v2";
-const API_CACHE = "noi-api-v2";
+const SHELL_CACHE = "noi-shell-v3";
+const API_CACHE = "noi-api-v3";
 const LOGO = "https://customer-assets.emergentagent.com/job_fd8a2fce-eb5b-4ab8-a990-d9b853fdd702/artifacts/oxjy3e6l_Gemini_Generated_Image_.png";
 
 // Endpoint GET da mettere in cache per la modalità offline (sola lettura)
