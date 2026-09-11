@@ -171,11 +171,11 @@ export default function Dashboard() {
             <Link to={t.to} data-testid={`tile-${t.label.toLowerCase().split(" ")[0]}`}>
               <Card className={`p-6 h-full border-border transition-all hover:-translate-y-1 hover:shadow-lg cursor-pointer ${t.bg}`}>
                 <div className="flex items-start justify-between">
-                  <t.icon size={28} className={t.bg.includes("primary") ? "" : "text-black"} />
+                  <t.icon size={28} className="text-black" />
                   <ArrowUpRight size={20} className="opacity-50" />
                 </div>
-                <h3 className={`font-head text-xl font-semibold mt-6 ${t.bg.includes("primary") ? "" : "text-black"}`}>{t.label}</h3>
-                <p className={`text-sm mt-1 ${t.bg.includes("primary") ? "text-primary-foreground/80" : "text-black"}`}>{t.sub}</p>
+                <h3 className="font-head text-xl font-semibold mt-6 text-black">{t.label}</h3>
+                <p className="text-sm mt-1 text-black">{t.sub}</p>
               </Card>
             </Link>
           </motion.div>
