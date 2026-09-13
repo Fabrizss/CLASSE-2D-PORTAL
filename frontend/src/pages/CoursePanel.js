@@ -12,6 +12,9 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { FormationField } from "@/components/FormationField";
+
+const FIELD_SPORTS = ["calcio7", "calcio11", "pallavolo", "volley3"];
 
 export default function CoursePanel() {
   const { id } = useParams();
@@ -50,6 +53,7 @@ export default function CoursePanel() {
   const deleteTeam = (tid) => act(() => api.delete(`/events/${id}/course/teams/${tid}`), "Squadra eliminata");
   const addMember = (tid, userId) => act(() => api.post(`/events/${id}/course/teams/${tid}/members`, { user_id: userId }), "Giocatore aggiunto");
   const removeMember = (tid, uid) => act(() => api.delete(`/events/${id}/course/teams/${tid}/members/${uid}`), "Giocatore rimosso");
+  const assignPosition = (tid, userId, position) => act(() => api.post(`/events/${id}/course/teams/${tid}/members/${userId}/position`, { position }), position ? "Posizione assegnata" : "Posizione rimossa");
 
   const createPoll = async () => {
     const options = newPoll.options.split(",").map((s) => s.trim()).filter(Boolean);
@@ -165,15 +169,22 @@ export default function CoursePanel() {
                       <button onClick={() => deleteTeam(t.id)} data-testid={`delete-team-${t.id}`} className="text-muted-foreground hover:text-destructive"><Trash2 size={15} /></button>
                     )}
                   </div>
-                  <div className="mt-3 space-y-1.5">
-                    {t.members.length === 0 && <p className="text-xs text-muted-foreground">Nessun giocatore inserito.</p>}
-                    {t.members.map((m) => (
-                      <div key={m.user_id} className="flex items-center justify-between text-sm px-2.5 py-1.5 rounded-lg bg-secondary/50" data-testid={`team-member-${t.id}-${m.user_id}`}>
-                        <span>{m.name}</span>
-                        {data.can_manage && <button onClick={() => removeMember(t.id, m.user_id)}><X size={13} className="text-muted-foreground hover:text-destructive" /></button>}
-                      </div>
-                    ))}
-                  </div>
+                  {FIELD_SPORTS.includes(t.sport_type) ? (
+                    <div className="mt-3">
+                      <FormationField sportType={t.sport_type} team={t} canManage={data.can_manage}
+                        onAssign={(uid, pos) => assignPosition(t.id, uid, pos)} />
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-1.5">
+                      {t.members.length === 0 && <p className="text-xs text-muted-foreground">Nessun giocatore inserito.</p>}
+                      {t.members.map((m) => (
+                        <div key={m.user_id} className="flex items-center justify-between text-sm px-2.5 py-1.5 rounded-lg bg-secondary/50" data-testid={`team-member-${t.id}-${m.user_id}`}>
+                          <span>{m.name}</span>
+                          {data.can_manage && <button onClick={() => removeMember(t.id, m.user_id)}><X size={13} className="text-muted-foreground hover:text-destructive" /></button>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {data.can_manage && (!sport?.max || t.members.length < sport.max) && availableFor(t).length > 0 && (
                     <Select onValueChange={(v) => addMember(t.id, v)}>
                       <SelectTrigger className="mt-3" data-testid={`add-member-select-${t.id}`}><SelectValue placeholder="+ Aggiungi giocatore" /></SelectTrigger>

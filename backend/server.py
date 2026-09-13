@@ -251,6 +251,9 @@ class TeamIn(BaseModel):
 class TeamMemberIn(BaseModel):
     user_id: str
 
+class PositionIn(BaseModel):
+    position: Optional[str] = None
+
 class PollIn(BaseModel):
     question: str
     options: List[str]
@@ -636,7 +639,26 @@ async def add_team_member(eid: str, tid: str, body: TeamMemberIn, u: dict = Depe
     cap = SPORT_TYPES[team["sport_type"]]["max"]
     if cap and len(team.get("members", [])) >= cap:
         raise HTTPException(400, f"Squadra piena (massimo {cap})")
-    await db.course_teams.update_one({"id": tid}, {"$push": {"members": {"user_id": body.user_id, "name": participant["name"]}}})
+    await db.course_teams.update_one({"id": tid}, {"$push": {"members": {"user_id": body.user_id, "name": participant["name"], "position": None}}})
+    return {"ok": True}
+
+@api.post("/events/{eid}/course/teams/{tid}/members/{uid}/position")
+async def set_member_position(eid: str, tid: str, uid: str, body: PositionIn, u: dict = Depends(require_approved)):
+    ev = await get_event_or_404(eid)
+    if not await can_manage_course(eid, ev, u):
+        raise HTTPException(403, "Non autorizzato")
+    team = await db.course_teams.find_one({"id": tid, "event_id": eid})
+    if not team:
+        raise HTTPException(404, "Squadra non trovata")
+    members = team.get("members", [])
+    if not any(m["user_id"] == uid for m in members):
+        raise HTTPException(404, "Giocatore non nella squadra")
+    for m in members:
+        if body.position and m.get("position") == body.position and m["user_id"] != uid:
+            m["position"] = None
+        if m["user_id"] == uid:
+            m["position"] = body.position
+    await db.course_teams.update_one({"id": tid}, {"$set": {"members": members}})
     return {"ok": True}
 
 @api.delete("/events/{eid}/course/teams/{tid}/members/{uid}")

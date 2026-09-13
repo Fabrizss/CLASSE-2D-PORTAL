@@ -11,6 +11,10 @@ React + FastAPI + MongoDB. Auth JWT (localStorage Bearer). AI: Gemini 3.1 Pro vi
 - Membro autorizzato: può creare iscrizioni.
 - Membro: iscrizioni, studio AI, chat, azioni, news.
 
+## Implemented (2026-09, round 3)
+- Squadre calcio (7/11) e pallavolo (6/3): campo stilizzato interattivo per posizionare le formazioni (portiere/difesa/centrocampo/attacco per il calcio, zone 1-6 per la pallavolo) invece della semplice lista. Cliccando uno slot vuoto si assegna un giocatore dalla rosa già iscritta alla squadra; i non posizionati restano in "panchina". Basket e sport generico restano a lista semplice.
+- Nuovo endpoint POST /events/{eid}/course/teams/{tid}/members/{uid}/position per assegnare/spostare/rimuovere una posizione.
+
 ## Implemented (2026-09, round 2)
 - AI ora usa Google AI (Gemini) con chiave admin-configurabile invece di Groq (Groq rimosso). Endpoint /api/admin/ai-settings ora usa `google_ai_configured`. Fallback a Gemini via Emergent Universal Key se nessuna chiave impostata (invariato).
 - Widget "Orario" in Dashboard + tab "Orario" in Admin: 3 versioni (provvisorio/settimana/definitivo), una attiva mostrata a tutti, overlay personale (materia+appunto) per singolo utente senza toccare l'orario ufficiale.
