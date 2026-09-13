@@ -11,6 +11,14 @@ React + FastAPI + MongoDB. Auth JWT (localStorage Bearer). AI: Gemini 3.1 Pro vi
 - Membro autorizzato: può creare iscrizioni.
 - Membro: iscrizioni, studio AI, chat, azioni, news.
 
+## Implemented (2026-09, round 2)
+- AI ora usa Google AI (Gemini) con chiave admin-configurabile invece di Groq (Groq rimosso). Endpoint /api/admin/ai-settings ora usa `google_ai_configured`. Fallback a Gemini via Emergent Universal Key se nessuna chiave impostata (invariato).
+- Widget "Orario" in Dashboard + tab "Orario" in Admin: 3 versioni (provvisorio/settimana/definitivo), una attiva mostrata a tutti, overlay personale (materia+appunto) per singolo utente senza toccare l'orario ufficiale.
+- Ruolo "Professore": permessi admin-equivalenti su tutto il backend (require_admin accetta admin o professore) + funzione esclusiva Messaggi Privati con gli studenti. Assegnabile ciclando l'icona ruolo in Admin (Admin→Professore→Membro).
+- Pagina "/messaggi" (Direct Messages staff↔studenti): staff vede tutti gli studenti approvati e scrive per primo; lo studente vede solo lo staff che gli ha scritto. Bloccato staff↔staff e studente↔studente (403). Notifica push al destinatario.
+- Guide Admin aggiornate: sezione AI rinominata Google AI, nuovo accordion "Ruoli, Orario e Messaggi privati", script SQL Supabase aggiornato con le nuove tabelle.
+- Account test: prof@noidi2d.it / ProfNoi2D! (ruolo professore) creato per i test.
+
 ## Implemented (2026-09)
 - Dashboard: card "Modalità app" con switch Cloud (nessuna cache, sempre dati live) / PWA (offline, comportamento precedente), preferenza salvata in localStorage e sempre modificabile. Pulsante "Ricarica cache dal server" che disinstalla il service worker e svuota tutte le cache per risolvere versioni bloccate/stantie nel browser. Bump versione cache SW (v3) per invalidare le cache precedenti già installate sui dispositivi.
 - Chiave Groq configurabile da admin (tab "Guide e Sistemi"): se impostata, sostituisce Gemini in Studio AI (interrogazioni multi-turno con storico in `study_sessions`), flashcard (JSON mode) e moderazione AI della chat pubblica + chat corso. Senza chiave, fallback automatico a Gemini/censura a parole (comportamento invariato). Chiave mai restituita al frontend dopo il salvataggio.

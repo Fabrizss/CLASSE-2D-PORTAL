@@ -13,6 +13,8 @@ import News from "@/pages/News";
 import Reminders from "@/pages/Reminders";
 import Admin from "@/pages/Admin";
 import Install from "@/pages/Install";
+import Messaggi from "@/pages/Messaggi";
+import { isStaff } from "@/lib/roles";
 
 export const LOGO = "https://customer-assets.emergentagent.com/job_fd8a2fce-eb5b-4ab8-a990-d9b853fdd702/artifacts/oxjy3e6l_Gemini_Generated_Image_.png";
 
@@ -28,7 +30,7 @@ function Protected({ children, adminOnly }) {
   const { user } = useAuth();
   if (user === null) return <Loader />;
   if (!user) return <Navigate to="/auth" replace />;
-  if (adminOnly && user.role !== "admin") return <Navigate to="/" replace />;
+  if (adminOnly && !isStaff(user.role)) return <Navigate to="/" replace />;
   return <Layout>{children}</Layout>;
 }
 
@@ -44,6 +46,7 @@ function Shell() {
       <Route path="/chat" element={<Protected><Chat /></Protected>} />
       <Route path="/news" element={<Protected><News /></Protected>} />
       <Route path="/reminders" element={<Protected><Reminders /></Protected>} />
+      <Route path="/messaggi" element={<Protected><Messaggi /></Protected>} />
       <Route path="/install" element={<Protected><Install /></Protected>} />
       <Route path="/admin" element={<Protected adminOnly><Admin /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />

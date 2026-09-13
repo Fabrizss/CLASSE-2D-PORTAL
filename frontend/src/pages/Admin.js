@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, X, Shield, ShieldOff, Star, Trash2, Clock, Ban, Unlock, MessageSquare, BookOpen } from "lucide-react";
+import { Check, X, Shield, ShieldOff, Star, Trash2, Clock, Ban, Unlock, MessageSquare, BookOpen, GraduationCap, CalendarClock } from "lucide-react";
 import { api, errMsg } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Card } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { GuideSistemi } from "@/components/GuideSistemi";
+import { OrarioAdmin } from "@/components/OrarioAdmin";
 
 const STATUS = {
   pending: { label: "In attesa", cls: "bg-amber-500/15 text-amber-600 border-amber-500/30" },
@@ -37,6 +38,8 @@ export default function Admin() {
   const doBan = (mode, hours) => act(() => api.post(`/admin/users/${banTarget.id}/ban`, { mode, hours }), "Utente sospeso").then(() => setBanTarget(null));
 
   const isBanned = (u) => u.ban_permanent || (u.banned_until && u.banned_until > new Date().toISOString());
+  const nextRole = (r) => (r === "admin" ? "professore" : r === "professore" ? "member" : "admin");
+  const roleIcon = (r) => (r === "admin" ? <Shield size={16} /> : r === "professore" ? <GraduationCap size={16} /> : <ShieldOff size={16} />);
 
   const pending = users.filter((u) => u.status === "pending");
   const others = users.filter((u) => u.status !== "pending");
@@ -50,7 +53,8 @@ export default function Admin() {
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-semibold truncate">{u.name}</span>
           {u.role === "admin" && <Badge variant="outline" className="rounded-full bg-primary/15 text-primary border-primary/30">Admin</Badge>}
-          {u.can_create_events && u.role !== "admin" && <Badge variant="outline" className="rounded-full">Può creare eventi</Badge>}
+          {u.role === "professore" && <Badge variant="outline" className="rounded-full bg-sky-500/15 text-sky-600 border-sky-500/30">Professore</Badge>}
+          {u.can_create_events && u.role === "member" && <Badge variant="outline" className="rounded-full">Può creare eventi</Badge>}
           {isBanned(u) && <Badge variant="outline" className="rounded-full bg-red-500/15 text-red-600 border-red-500/30">{u.ban_permanent ? "Bannato" : "Sospeso"}</Badge>}
           <Badge variant="outline" className={`rounded-full ${STATUS[u.status]?.cls}`}>{STATUS[u.status]?.label}</Badge>
         </div>
@@ -69,9 +73,9 @@ export default function Admin() {
             <Button size="icon" variant="ghost" title="Autorizza a creare eventi"
               onClick={() => act(() => api.post(`/admin/users/${u.id}/authorize/${u.can_create_events ? 0 : 1}`), "Aggiornato")}
               data-testid={`authorize-${u.id}`}><Star size={16} className={u.can_create_events ? "text-amber-500 fill-amber-500" : ""} /></Button>
-            <Button size="icon" variant="ghost" title="Cambia ruolo"
-              onClick={() => act(() => api.post(`/admin/users/${u.id}/role/${u.role === "admin" ? "member" : "admin"}`), "Ruolo aggiornato")}
-              data-testid={`role-${u.id}`}>{u.role === "admin" ? <ShieldOff size={16} /> : <Shield size={16} />}</Button>
+            <Button size="icon" variant="ghost" title={`Ruolo: ${u.role} · clicca per cambiare`}
+              onClick={() => act(() => api.post(`/admin/users/${u.id}/role/${nextRole(u.role)}`), "Ruolo aggiornato")}
+              data-testid={`role-${u.id}`}>{roleIcon(u.role)}</Button>
             {isBanned(u) ? (
               <Button size="icon" variant="ghost" title="Rimuovi ban"
                 onClick={() => act(() => api.post(`/admin/users/${u.id}/unban`), "Ban rimosso")}
@@ -101,6 +105,7 @@ export default function Admin() {
             <Clock size={15} /> In attesa {pending.length > 0 && <span className="ml-1 bg-primary text-primary-foreground rounded-full px-1.5 text-xs">{pending.length}</span>}
           </TabsTrigger>
           <TabsTrigger value="all" data-testid="tab-all">Tutti i membri</TabsTrigger>
+          <TabsTrigger value="orario" data-testid="tab-orario" className="gap-2"><CalendarClock size={15} /> Orario</TabsTrigger>
           <TabsTrigger value="guide" data-testid="tab-guide" className="gap-2"><BookOpen size={15} /> Guide e Sistemi</TabsTrigger>
         </TabsList>
         <TabsContent value="pending" className="mt-6 space-y-3">
@@ -109,6 +114,9 @@ export default function Admin() {
         </TabsContent>
         <TabsContent value="all" className="mt-6 space-y-3">
           {others.map((u) => <Row key={u.id} u={u} />)}
+        </TabsContent>
+        <TabsContent value="orario" className="mt-6">
+          <OrarioAdmin />
         </TabsContent>
         <TabsContent value="guide" className="mt-6">
           <GuideSistemi />

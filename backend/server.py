@@ -18,10 +18,11 @@ import requests
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form, Header, Query, Response
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from pywebpush import webpush, WebPushException
 from emergentintegrations.llm.chat import LlmChat, UserMessage
-from groq import AsyncGroq
+from google import genai
+from google.genai import types as genai_types
 from pypdf import PdfReader
 import io
 
@@ -41,61 +42,63 @@ VAPID_CLAIM_EMAIL = os.environ.get('VAPID_CLAIM_EMAIL', 'mailto:admin@noidi2d.it
 resend.api_key = os.environ.get('RESEND_API_KEY') or None
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
 
-# ---------------- groq (AI configurabile da admin) ----------------
-GROQ_CHAT_MODEL = "openai/gpt-oss-120b"
-GROQ_FLASHCARD_MODEL = "openai/gpt-oss-20b"
-GROQ_MODERATION_MODEL = "openai/gpt-oss-safeguard-20b"
-_groq_key_cache = {"key": None}
+# ---------------- google ai / gemini (AI configurabile da admin) ----------------
+GOOGLE_CHAT_MODEL = "gemini-2.5-flash"
+GOOGLE_FLASHCARD_MODEL = "gemini-2.5-flash"
+GOOGLE_MODERATION_MODEL = "gemini-2.5-flash-lite"
+_google_key_cache = {"key": None}
 
 async def load_ai_settings():
     doc = await db.app_settings.find_one({"_id": "ai"})
-    _groq_key_cache["key"] = (doc or {}).get("groq_api_key") or None
+    _google_key_cache["key"] = (doc or {}).get("google_ai_api_key") or None
 
-def get_groq_key():
-    return _groq_key_cache["key"]
+def get_google_key():
+    return _google_key_cache["key"]
 
-async def groq_chat_reply(messages: list) -> str:
-    client = AsyncGroq(api_key=get_groq_key())
-    try:
-        resp = await client.chat.completions.create(model=GROQ_CHAT_MODEL, messages=messages, temperature=0.4, max_completion_tokens=800)
-        return resp.choices[0].message.content or ""
-    finally:
-        await client.close()
+async def google_chat_reply(system: str, history: list, message: str) -> str:
+    client = genai.Client(api_key=get_google_key())
+    contents = [{"role": h["role"], "parts": [{"text": h["text"]}]} for h in history]
+    contents.append({"role": "user", "parts": [{"text": message}]})
+    resp = await client.aio.models.generate_content(
+        model=GOOGLE_CHAT_MODEL, contents=contents,
+        config=genai_types.GenerateContentConfig(system_instruction=system, temperature=0.4, max_output_tokens=800),
+    )
+    return resp.text or ""
 
-async def groq_json_reply(messages: list, model: str = GROQ_FLASHCARD_MODEL) -> str:
-    client = AsyncGroq(api_key=get_groq_key())
-    try:
-        resp = await client.chat.completions.create(
-            model=model, messages=messages, temperature=0.2, max_completion_tokens=2000,
-            response_format={"type": "json_object"},
-        )
-        return resp.choices[0].message.content or "{}"
-    finally:
-        await client.close()
+async def google_json_reply(system: str, prompt: str, model: str = GOOGLE_FLASHCARD_MODEL) -> str:
+    client = genai.Client(api_key=get_google_key())
+    resp = await client.aio.models.generate_content(
+        model=model, contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=system, temperature=0.2, max_output_tokens=2000,
+            response_mime_type="application/json",
+        ),
+    )
+    return resp.text or "{}"
 
 async def moderate_text(text: str) -> bool:
-    """Ritorna True se il messaggio va bloccato dalla moderazione AI (Groq). Fail-open se Groq non configurato/non risponde."""
-    key = get_groq_key()
+    """Ritorna True se il messaggio va bloccato dalla moderazione AI (Google AI). Fail-open se non configurata/non risponde."""
+    key = get_google_key()
     if not key:
         return False
     policy = ("Sei un moderatore per una chat di studenti di una scuola superiore italiana. "
               'Classifica il messaggio. Rispondi SOLO con JSON: {"allowed": true} oppure {"allowed": false}. '
               "Blocca solo contenuti gravi: minacce, bullismo, contenuti sessuali, odio, autolesionismo, istigazione a reati. "
               "Linguaggio scolastico normale, sfoghi leggeri o ironia vanno sempre permessi (allowed=true).")
-    client = AsyncGroq(api_key=key)
     try:
-        resp = await asyncio.wait_for(client.chat.completions.create(
-            model=GROQ_MODERATION_MODEL,
-            messages=[{"role": "system", "content": policy}, {"role": "user", "content": text[:1000]}],
-            response_format={"type": "json_object"}, temperature=0, max_completion_tokens=50,
+        client = genai.Client(api_key=key)
+        resp = await asyncio.wait_for(client.aio.models.generate_content(
+            model=GOOGLE_MODERATION_MODEL, contents=text[:1000],
+            config=genai_types.GenerateContentConfig(
+                system_instruction=policy, temperature=0, max_output_tokens=50,
+                response_mime_type="application/json",
+            ),
         ), timeout=6)
-        data = json.loads(resp.choices[0].message.content or "{}")
+        data = json.loads(resp.text or "{}")
         return not data.get("allowed", True)
     except Exception as e:
         logger.warning(f"moderazione AI fallita: {e}")
         return False
-    finally:
-        await client.close()
 
 app = FastAPI()
 api = APIRouter(prefix="/api")
@@ -163,9 +166,12 @@ async def require_approved(request: Request) -> dict:
 
 async def require_admin(request: Request) -> dict:
     u = await require_approved(request)
-    if u["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Solo gli admin")
+    if u["role"] not in ("admin", "professore"):
+        raise HTTPException(status_code=403, detail="Solo staff (admin o professore)")
     return u
+
+def is_staff_role(role: str) -> bool:
+    return role in ("admin", "professore")
 
 # ---------------- models ----------------
 class RegisterIn(BaseModel):
@@ -401,7 +407,7 @@ async def reject_user(uid: str, u: dict = Depends(require_admin)):
 
 @api.post("/admin/users/{uid}/role/{role}")
 async def set_role(uid: str, role: str, u: dict = Depends(require_admin)):
-    if role not in ("admin", "member"):
+    if role not in ("admin", "member", "professore"):
         raise HTTPException(400, "Ruolo non valido")
     await db.users.update_one({"id": uid}, {"$set": {"role": role}})
     return {"ok": True}
@@ -434,14 +440,14 @@ async def unban_user(uid: str, u: dict = Depends(require_admin)):
 
 @api.get("/admin/ai-settings")
 async def get_ai_settings(u: dict = Depends(require_admin)):
-    return {"groq_configured": bool(get_groq_key())}
+    return {"google_ai_configured": bool(get_google_key())}
 
 @api.post("/admin/ai-settings")
 async def save_ai_settings(body: AISettingsIn, u: dict = Depends(require_admin)):
     key = body.api_key.strip()
-    await db.app_settings.update_one({"_id": "ai"}, {"$set": {"groq_api_key": key or None}}, upsert=True)
+    await db.app_settings.update_one({"_id": "ai"}, {"$set": {"google_ai_api_key": key or None}}, upsert=True)
     await load_ai_settings()
-    return {"groq_configured": bool(key)}
+    return {"google_ai_configured": bool(key)}
 
 # ---------------- events / iscrizioni ----------------
 @api.get("/events")
@@ -454,13 +460,13 @@ async def get_events(u: dict = Depends(require_approved)):
         e["my_option"] = mine.get("option") if mine else None
         e["signup_count"] = len(signs)
         e["option_counts"] = {opt: sum(1 for s in signs if s.get("option") == opt) for opt in e.get("options", [])}
-        e["can_manage"] = u["role"] == "admin" or e["created_by"] == u["id"]
+        e["can_manage"] = is_staff_role(u["role"]) or e["created_by"] == u["id"]
         e.pop("signups", None)
     return events
 
 @api.post("/events")
 async def create_event(body: EventIn, u: dict = Depends(require_approved)):
-    if u["role"] != "admin" and not u.get("can_create_events"):
+    if not is_staff_role(u["role"]) and not u.get("can_create_events"):
         raise HTTPException(403, "Non autorizzato a creare iscrizioni")
     eid = str(uuid.uuid4())
     event = {
@@ -517,7 +523,7 @@ async def event_signups(eid: str, u: dict = Depends(require_approved)):
     ev = await db.events.find_one({"id": eid}, {"_id": 0})
     if not ev:
         raise HTTPException(404, "Non trovata")
-    if u["role"] != "admin" and ev["created_by"] != u["id"]:
+    if not is_staff_role(u["role"]) and ev["created_by"] != u["id"]:
         raise HTTPException(403, "Solo admin o organizzatore")
     return {"signups": ev.get("signups", []), "options": ev.get("options", [])}
 
@@ -526,14 +532,14 @@ async def delete_event(eid: str, u: dict = Depends(require_approved)):
     ev = await db.events.find_one({"id": eid})
     if not ev:
         raise HTTPException(404, "Non trovata")
-    if u["role"] != "admin" and ev["created_by"] != u["id"]:
+    if not is_staff_role(u["role"]) and ev["created_by"] != u["id"]:
         raise HTTPException(403, "Non autorizzato")
     await db.events.delete_one({"id": eid})
     return {"ok": True}
 
 # ---------------- pannello corso (rappresentante, squadre, sondaggi, chat per evento) ----------------
 def event_participant_or_admin(ev: dict, u: dict) -> bool:
-    if u["role"] == "admin" or ev["created_by"] == u["id"]:
+    if is_staff_role(u["role"]) or ev["created_by"] == u["id"]:
         return True
     return any(s["user_id"] == u["id"] for s in ev.get("signups", []))
 
@@ -544,7 +550,7 @@ async def get_event_or_404(eid: str) -> dict:
     return ev
 
 async def can_manage_course(eid: str, ev: dict, u: dict) -> bool:
-    if u["role"] == "admin" or ev["created_by"] == u["id"]:
+    if is_staff_role(u["role"]) or ev["created_by"] == u["id"]:
         return True
     rep = await db.course_reps.find_one({"event_id": eid})
     return bool(rep and rep["user_id"] == u["id"])
@@ -573,7 +579,7 @@ async def get_course(eid: str, u: dict = Depends(require_approved)):
 @api.post("/events/{eid}/course/rep")
 async def set_course_rep(eid: str, body: RepIn, u: dict = Depends(require_approved)):
     ev = await get_event_or_404(eid)
-    if not (u["role"] == "admin" or ev["created_by"] == u["id"]):
+    if not (is_staff_role(u["role"]) or ev["created_by"] == u["id"]):
         raise HTTPException(403, "Solo admin o organizzatore")
     target = next((s for s in ev.get("signups", []) if s["user_id"] == body.user_id), None)
     if not target:
@@ -588,7 +594,7 @@ async def set_course_rep(eid: str, body: RepIn, u: dict = Depends(require_approv
 @api.delete("/events/{eid}/course/rep")
 async def remove_course_rep(eid: str, u: dict = Depends(require_approved)):
     ev = await get_event_or_404(eid)
-    if not (u["role"] == "admin" or ev["created_by"] == u["id"]):
+    if not (is_staff_role(u["role"]) or ev["created_by"] == u["id"]):
         raise HTTPException(403, "Solo admin o organizzatore")
     await db.course_reps.delete_one({"event_id": eid})
     return {"ok": True}
@@ -854,7 +860,7 @@ async def delete_reminder(rid: str, u: dict = Depends(require_approved)):
     r = await db.reminders.find_one({"id": rid})
     if not r:
         raise HTTPException(404, "Non trovato")
-    if r["user_id"] != u["id"] and u["role"] != "admin":
+    if r["user_id"] != u["id"] and not is_staff_role(u["role"]):
         raise HTTPException(403, "Non autorizzato")
     await db.reminders.delete_one({"id": rid})
     return {"ok": True}
@@ -887,6 +893,134 @@ async def my_avvisi(u: dict = Depends(require_approved)):
     items = await db.avvisi.find({"user_id": u["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
     await db.avvisi.update_many({"user_id": u["id"], "read": False}, {"$set": {"read": True}})
     return items
+
+# ---------------- orario (provvisorio / settimana specifica / definitivo + personalizzazioni) ----------------
+ORARIO_TYPES = ("provvisorio", "settimana", "definitivo")
+ORARIO_DAYS = ["Lun", "Mar", "Mer", "Gio", "Ven"]
+ORARIO_HOURS = [1, 2, 3, 4, 5, 6]
+
+class OrarioIn(BaseModel):
+    type: str
+    grid: dict = Field(default_factory=dict)
+    week_label: Optional[str] = None
+
+class OrarioActiveIn(BaseModel):
+    type: str
+
+class OrarioPersonalIn(BaseModel):
+    cell: str
+    subject: Optional[str] = None
+    note: Optional[str] = None
+
+@api.get("/orario")
+async def get_orario(u: dict = Depends(require_approved)):
+    meta = await db.orario_meta.find_one({"_id": "meta"}) or {}
+    active = meta.get("active_type", "definitivo")
+    doc = await db.orario_settings.find_one({"_id": active}) or {}
+    personal = await db.orario_personal.find_one({"_id": u["id"]}) or {}
+    return {
+        "active_type": active, "week_label": doc.get("week_label"),
+        "grid": doc.get("grid", {}), "days": ORARIO_DAYS, "hours": ORARIO_HOURS,
+        "my_overrides": personal.get("cells", {}),
+    }
+
+@api.get("/admin/orario")
+async def get_admin_orario(u: dict = Depends(require_admin)):
+    meta = await db.orario_meta.find_one({"_id": "meta"}) or {}
+    grids = {}
+    for t in ORARIO_TYPES:
+        doc = await db.orario_settings.find_one({"_id": t}) or {}
+        grids[t] = {"grid": doc.get("grid", {}), "week_label": doc.get("week_label")}
+    return {"active_type": meta.get("active_type", "definitivo"), "grids": grids, "days": ORARIO_DAYS, "hours": ORARIO_HOURS}
+
+@api.post("/admin/orario")
+async def save_orario(body: OrarioIn, u: dict = Depends(require_admin)):
+    if body.type not in ORARIO_TYPES:
+        raise HTTPException(400, "Tipo orario non valido")
+    await db.orario_settings.update_one(
+        {"_id": body.type},
+        {"$set": {"grid": body.grid, "week_label": body.week_label, "updated_at": now_iso()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+@api.post("/admin/orario/active")
+async def set_active_orario(body: OrarioActiveIn, u: dict = Depends(require_admin)):
+    if body.type not in ORARIO_TYPES:
+        raise HTTPException(400, "Tipo orario non valido")
+    await db.orario_meta.update_one({"_id": "meta"}, {"$set": {"active_type": body.type}}, upsert=True)
+    return {"ok": True}
+
+@api.post("/orario/personal")
+async def save_personal_orario(body: OrarioPersonalIn, u: dict = Depends(require_approved)):
+    subject = (body.subject or "").strip()
+    note = (body.note or "").strip()
+    doc = await db.orario_personal.find_one({"_id": u["id"]}) or {}
+    cells = doc.get("cells", {})
+    if not subject and not note:
+        cells.pop(body.cell, None)
+    else:
+        cells[body.cell] = {"subject": subject or None, "note": note or None}
+    await db.orario_personal.update_one({"_id": u["id"]}, {"$set": {"cells": cells}}, upsert=True)
+    return {"ok": True, "cells": cells}
+
+# ---------------- messaggi privati staff <-> studenti ----------------
+class DMIn(BaseModel):
+    text: str
+
+def dm_thread_id(a: str, b: str) -> str:
+    return "_".join(sorted([a, b]))
+
+async def dm_last_and_unread(me_id: str, other_id: str):
+    tid = dm_thread_id(me_id, other_id)
+    last = await db.private_messages.find_one({"thread_id": tid}, {"_id": 0}, sort=[("created_at", -1)])
+    unread = await db.private_messages.count_documents({"thread_id": tid, "to_id": me_id, "read": False})
+    return last, unread
+
+@api.get("/dm/contacts")
+async def dm_contacts(u: dict = Depends(require_approved)):
+    if is_staff_role(u["role"]):
+        others = await db.users.find({"status": "approved", "role": "member"}, {"_id": 0}).to_list(1000)
+    else:
+        staff_from = await db.private_messages.distinct("from_id", {"to_id": u["id"]})
+        staff_to = await db.private_messages.distinct("to_id", {"from_id": u["id"]})
+        ids = list(set(staff_from + staff_to))
+        others = await db.users.find({"id": {"$in": ids}}, {"_id": 0}).to_list(200)
+    contacts = []
+    for x in others:
+        last, unread = await dm_last_and_unread(u["id"], x["id"])
+        contacts.append({**public_user(x), "last_text": last["text"] if last else None, "unread": unread})
+    contacts.sort(key=lambda c: (c["unread"] == 0, c["name"]))
+    return contacts
+
+@api.get("/dm/messages/{other_id}")
+async def dm_messages(other_id: str, u: dict = Depends(require_approved)):
+    other = await db.users.find_one({"id": other_id})
+    if not other:
+        raise HTTPException(404, "Utente non trovato")
+    if is_staff_role(u["role"]) == is_staff_role(other["role"]):
+        raise HTTPException(403, "Chat privata consentita solo tra staff e studenti")
+    tid = dm_thread_id(u["id"], other_id)
+    msgs = await db.private_messages.find({"thread_id": tid}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    await db.private_messages.update_many({"thread_id": tid, "to_id": u["id"], "read": False}, {"$set": {"read": True}})
+    return msgs
+
+@api.post("/dm/messages/{other_id}")
+async def dm_send(other_id: str, body: DMIn, u: dict = Depends(require_approved)):
+    other = await db.users.find_one({"id": other_id})
+    if not other:
+        raise HTTPException(404, "Utente non trovato")
+    if is_staff_role(u["role"]) == is_staff_role(other["role"]):
+        raise HTTPException(403, "Chat privata consentita solo tra staff e studenti")
+    text = body.text.strip()[:1000]
+    if not text:
+        raise HTTPException(400, "Messaggio vuoto")
+    msg = {"id": str(uuid.uuid4()), "thread_id": dm_thread_id(u["id"], other_id), "from_id": u["id"], "from_name": u["name"],
+           "to_id": other_id, "text": text, "read": False, "created_at": now_iso()}
+    await db.private_messages.insert_one(dict(msg))
+    subs = await db.push_subscriptions.find({"user_id": other_id}, {"_id": 0}).to_list(50)
+    asyncio.create_task(_push(subs, f"Messaggio privato da {u['name']}", text[:100], "/messaggi"))
+    return msg
 
 # ---------------- P2P actions ----------------
 @api.post("/actions")
@@ -962,12 +1096,9 @@ async def gen_flashcards(body: FlashcardIn, u: dict = Depends(require_approved))
     prompt = (f"Crea {body.count} flashcard dallo studio seguente. "
               f'Rispondi SOLO con un oggetto JSON: {{"cards": [{{"q":"domanda","a":"risposta"}}]}}. '
               f"Domande brevi e chiare in italiano.\n\nMATERIALE:\n{source}")
-    if get_groq_key():
+    if get_google_key():
         try:
-            raw = await groq_json_reply([
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": prompt},
-            ])
+            raw = await google_json_reply(sys_prompt, prompt)
         except Exception as e:
             raise HTTPException(500, f"Errore AI: {e}")
         try:
@@ -997,14 +1128,13 @@ async def study_chat(body: StudyChatIn, u: dict = Depends(require_approved)):
     system = (f"Sei un professore italiano severo ma incoraggiante che interroga uno studente su {subj}. "
               "Fai UNA domanda alla volta, valuta la risposta precedente in modo costruttivo con un voto da 1 a 10, "
               "poi poni la domanda successiva. Sii conciso e parla in italiano.")
-    if get_groq_key():
+    if get_google_key():
         session = await db.study_sessions.find_one({"session_id": body.session_id}) or {"messages": []}
-        messages = [{"role": "system", "content": system}] + session["messages"] + [{"role": "user", "content": body.message}]
         try:
-            reply = await groq_chat_reply(messages)
+            reply = await google_chat_reply(system, session["messages"], body.message)
         except Exception as e:
             raise HTTPException(500, f"Errore AI: {e}")
-        new_messages = (session["messages"] + [{"role": "user", "content": body.message}, {"role": "assistant", "content": reply}])[-20:]
+        new_messages = (session["messages"] + [{"role": "user", "text": body.message}, {"role": "model", "text": reply}])[-20:]
         await db.study_sessions.update_one({"session_id": body.session_id}, {"$set": {"messages": new_messages}}, upsert=True)
     else:
         chat = make_chat(f"study-{body.session_id}", system)

@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { StickyNote, Plus, Trash2, Flag, Lock, Globe } from "lucide-react";
 import { api, errMsg, requireOnline } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
+import { isStaff } from "@/lib/roles";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 
 export default function Reminders() {
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = isStaff(user?.role);
   const [items, setItems] = useState([]);
   const [text, setText] = useState("");
   const [isPublic, setIsPublic] = useState(false);

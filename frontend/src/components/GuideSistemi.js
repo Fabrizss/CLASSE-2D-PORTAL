@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Bot, Copy, Check, KeyRound, Github, Rocket, Database } from "lucide-react";
+import { Bot, Copy, Check, KeyRound, Github, Rocket, Database, Users } from "lucide-react";
 import { api, errMsg } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ create table users (
   name text not null,
   email text unique not null,
   password_hash text not null,
-  role text not null default 'member' check (role in ('member','admin')),
+  role text not null default 'member' check (role in ('member','admin','professore')),
   status text not null default 'pending' check (status in ('pending','approved','rejected')),
   can_create_events boolean default false,
   avatar_color text default '#7C3AED',
@@ -157,9 +157,37 @@ create table course_chat (
 
 create table app_settings (
   id text primary key,
-  groq_api_key text
+  google_ai_api_key text
 );
-insert into app_settings (id, groq_api_key) values ('ai', null) on conflict (id) do nothing;
+insert into app_settings (id, google_ai_api_key) values ('ai', null) on conflict (id) do nothing;
+
+create table orario_settings (
+  type text primary key check (type in ('provvisorio','settimana','definitivo')),
+  grid jsonb default '{}',
+  week_label text,
+  updated_at timestamptz default now()
+);
+
+create table orario_meta (
+  id text primary key default 'meta',
+  active_type text default 'definitivo'
+);
+
+create table orario_personal (
+  user_id uuid primary key references users(id) on delete cascade,
+  cells jsonb default '{}'
+);
+
+create table private_messages (
+  id uuid primary key default gen_random_uuid(),
+  thread_id text not null,
+  from_id uuid references users(id),
+  from_name text,
+  to_id uuid references users(id),
+  text text not null,
+  read boolean default false,
+  created_at timestamptz default now()
+);
 
 -- Abilita RLS su tutte le tabelle (le policy vanno scritte in base al tuo sistema di login,
 -- perché questa app usa JWT custom e non Supabase Auth: senza policy dedicate,
@@ -179,7 +207,11 @@ alter table course_team_members enable row level security;
 alter table course_polls enable row level security;
 alter table course_poll_votes enable row level security;
 alter table course_chat enable row level security;
-alter table app_settings enable row level security;`;
+alter table app_settings enable row level security;
+alter table orario_settings enable row level security;
+alter table orario_meta enable row level security;
+alter table orario_personal enable row level security;
+alter table private_messages enable row level security;`;
 
 function CopyBlock({ text, testId }) {
   const [copied, setCopied] = useState(false);
@@ -203,19 +235,19 @@ export function GuideSistemi() {
   const [key, setKey] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const load = () => api.get("/admin/ai-settings").then((r) => setConfigured(r.data.groq_configured)).catch(() => {});
+  const load = () => api.get("/admin/ai-settings").then((r) => setConfigured(r.data.google_ai_configured)).catch(() => {});
   useEffect(() => { load(); }, []);
 
   const save = async () => {
-    if (!key.trim()) return toast.error("Inserisci la chiave Groq");
+    if (!key.trim()) return toast.error("Inserisci la chiave Google AI");
     setSaving(true);
-    try { const { data } = await api.post("/admin/ai-settings", { api_key: key.trim() }); setConfigured(data.groq_configured); setKey(""); toast.success("Chiave Groq salvata: ora l'AI la usa in tutta l'app"); }
+    try { const { data } = await api.post("/admin/ai-settings", { api_key: key.trim() }); setConfigured(data.google_ai_configured); setKey(""); toast.success("Chiave Google AI salvata: ora l'AI la usa in tutta l'app"); }
     catch (e) { toast.error(errMsg(e)); }
     finally { setSaving(false); }
   };
   const remove = async () => {
     setSaving(true);
-    try { const { data } = await api.post("/admin/ai-settings", { api_key: "" }); setConfigured(data.groq_configured); toast.success("Chiave rimossa, torni a usare Gemini"); }
+    try { const { data } = await api.post("/admin/ai-settings", { api_key: "" }); setConfigured(data.google_ai_configured); toast.success("Chiave rimossa, torni a usare il motore Gemini predefinito"); }
     catch (e) { toast.error(errMsg(e)); }
     finally { setSaving(false); }
   };
@@ -226,25 +258,33 @@ export function GuideSistemi() {
         <div className="flex items-center gap-2.5">
           <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary grid place-items-center"><Bot size={20} /></div>
           <div className="flex-1">
-            <h3 className="font-head text-lg font-semibold">Motore AI · Groq</h3>
-            <p className="text-xs text-muted-foreground">Collega la tua chiave Groq per usarla in Studio AI, flashcard e moderazione della chat.</p>
+            <h3 className="font-head text-lg font-semibold">Motore AI · Google AI (Gemini)</h3>
+            <p className="text-xs text-muted-foreground">Collega la tua chiave Google AI Studio per usarla in Studio AI, flashcard e moderazione della chat.</p>
           </div>
           <Badge variant="outline" className={`rounded-full ${configured ? "bg-emerald-500/15 text-emerald-600 border-emerald-500/30" : "bg-secondary text-muted-foreground"}`} data-testid="ai-status-badge">
-            {configured ? "Groq attivo" : "Gemini (predefinito)"}
+            {configured ? "Google AI attivo" : "Gemini (predefinito)"}
           </Badge>
         </div>
         <div className="mt-4 flex flex-col sm:flex-row gap-2">
-          <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="gsk_..." data-testid="groq-key-input" className="flex-1" autoComplete="off" />
+          <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="AIza..." data-testid="groq-key-input" className="flex-1" autoComplete="off" />
           <Button onClick={save} disabled={saving} data-testid="save-groq-key-btn" className="rounded-full gap-2 whitespace-nowrap"><KeyRound size={15} /> Salva chiave</Button>
           {configured && <Button variant="outline" onClick={remove} disabled={saving} data-testid="remove-groq-key-btn" className="rounded-full whitespace-nowrap">Rimuovi</Button>}
         </div>
-        <p className="text-xs text-muted-foreground mt-2">Ottieni la chiave su <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer" className="text-primary underline">console.groq.com/keys</a>. Non viene mai mostrata di nuovo dopo il salvataggio.</p>
+        <p className="text-xs text-muted-foreground mt-2">Ottieni la chiave su <a href="https://aistudio.google.com/api-keys" target="_blank" rel="noreferrer" className="text-primary underline">aistudio.google.com/api-keys</a>. Non viene mai mostrata di nuovo dopo il salvataggio.</p>
       </Card>
 
       <Card className="p-6 border-border">
         <h3 className="font-head text-lg font-semibold mb-1">Guide e Sistemi</h3>
         <p className="text-xs text-muted-foreground mb-2">Tutto quello che serve per esportare, deployare altrove e replicare il database su un altro server.</p>
         <Accordion type="single" collapsible className="w-full" data-testid="guide-accordion">
+          <AccordionItem value="ruoli">
+            <AccordionTrigger data-testid="guide-ruoli-trigger" className="gap-2"><Users size={16} className="text-primary shrink-0" /> Ruoli, Orario e Messaggi privati</AccordionTrigger>
+            <AccordionContent className="text-sm text-muted-foreground space-y-2">
+              <p><b>Ruoli:</b> Admin (controllo completo), Professore (stessi permessi di un admin: eventi, news, moderazione, orario, chiave AI, più la possibilità di scrivere in privato agli studenti), Membro (studente). Cambia ruolo cliccando l'icona ruolo nella tab "Tutti i membri" (Scudo → Laurea → X → Scudo).</p>
+              <p><b>Orario:</b> nella tab "Orario" gestisci tre versioni (Provvisorio, Settimana specifica, Definitivo) e scegli quale è "attiva": quella appare nel widget Orario della Dashboard di tutti. Ogni studente può aggiungere sopra un appunto o una materia personale, visibile solo a lui.</p>
+              <p><b>Messaggi privati:</b> Admin e Professori trovano in "Messaggi" l'elenco degli studenti approvati e possono scrivere in privato; lo studente riceve una notifica push e trova la chat nella sua pagina "Messaggi".</p>
+            </AccordionContent>
+          </AccordionItem>
           <AccordionItem value="github">
             <AccordionTrigger data-testid="guide-github-trigger" className="gap-2"><Github size={16} className="text-primary shrink-0" /> Come salvare il codice su GitHub</AccordionTrigger>
             <AccordionContent className="text-sm text-muted-foreground space-y-2">

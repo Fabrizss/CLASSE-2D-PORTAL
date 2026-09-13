@@ -3,6 +3,7 @@ import { Send, ShieldCheck, Trash2, CheckSquare } from "lucide-react";
 import { api, errMsg, requireOnline } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { useOnline } from "@/hooks/useOnline";
+import { isStaff } from "@/lib/roles";
 import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,7 @@ export default function Chat() {
   const [selMode, setSelMode] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const endRef = useRef();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = isStaff(user?.role);
   const online = useOnline();
 
   const load = () => { if (!navigator.onLine) return; api.get("/chat/messages").then((r) => setMsgs(r.data)).catch(() => {}); };

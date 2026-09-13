@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Plus, Paperclip, Trash2, Newspaper, Loader2, Download, X } from "lucide-react";
 import { api, errMsg, API, requireOnline } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
+import { isStaff } from "@/lib/roles";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +14,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 
 export default function News() {
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = isStaff(user?.role);
   const [news, setNews] = useState([]);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);

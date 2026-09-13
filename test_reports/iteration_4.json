@@ -1,0 +1,29 @@
+{
+  "summary": "Comprehensive testing of new features: (1) Google AI settings (Groq -> Google AI switch), (2) Orario feature with 3 versions + personal overlay, (3) Professore role with admin-equivalent permissions, (4) Direct Messages between staff and students. Backend: 26/26 pytest cases pass on test_new_features.py covering all four feature areas + permission checks (professore counted as staff, students blocked from /admin/*, staff<->staff and student<->student DM blocked with 403, unknown user 404, empty message 400). Frontend: 6/6 UI flows pass end-to-end: (a) Guide badge transitions Gemini(predefinito) -> Google AI attivo -> Gemini(predefinito) when saving/removing fake key; ruoli accordion opens; (b) Admin Orario tab lets admin edit definitivo grid (Lun-1=Matematica), save, and edit settimana with week_label; (c) Dashboard orario-widget shows the active grid to all users; (d) Prof login shows Admin link + 4 admin tabs; (e) Prof /messaggi shows all 29 approved students, sending a DM shows the dm-message row; (f) A freshly created student sees Matematica on Lun-1 (official) then applies personal override 'Ripasso Mate' with note icon that replaces the cell view for that student only. No blocking bugs found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_new_features.py",
+    "/app/test_reports/pytest/new_features.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py DM endpoints (/api/dm/messages/{other_id}): the check `is_staff_role(u['role']) == is_staff_role(other['role'])` correctly blocks staff<->staff AND student<->student but the error message 'Chat privata consentita solo tra staff e studenti' is returned as detail — good.",
+    "server.py /api/dm/contacts for students only lists staff who have already interacted; that matches the spec (student sees only staff that wrote to them). Consider edge case: student cannot proactively DM a staff who has never messaged them, which is by design per the spec.",
+    "server.py OrarioIn.grid is `dict = {}` (mutable default) — Pydantic v2 handles this safely but it's a code-smell; prefer `Field(default_factory=dict)`.",
+    "OrarioWidget.js: the dashboard widget POSTs to /orario/personal even when subject+note both empty (which the backend uses as a delete-op) — behavior is correct, worth a UI hint 'lascia vuoto per rimuovere l'appunto'.",
+    "GuideSistemi.js: the input placeholder is 'AIza...' (Google API keys) and the label was updated to 'Google AI (Gemini)' but the data-testid is still `groq-key-input`/`save-groq-key-btn`/`remove-groq-key-btn`. Kept intentionally for test-id stability but consider renaming to `ai-key-input` in a future sweep to avoid confusion.",
+    "Admin.js role button cycles Admin -> Professore -> Member -> Admin correctly; the data-testid `role-{userId}` is present and the backend endpoint `/admin/users/{uid}/role/{role}` accepts admin|member|professore."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_new_features.py",
+    "/app/memory/test_credentials.md"
+  ],
+  "success_rate": {"backend": "100% (26/26)", "frontend": "100% (6/6 flows)"},
+  "test_credentials": "Admin: admin@noidi2d.it / AdminNoi2D! ; Professore: prof@noidi2d.it / ProfNoi2D! (both approved, prof role already set). test_credentials.md was updated to document the prof account.",
+  "seed_data_creation": "Backend tests create disposable students prefixed stud1_/stud2_/ui_stud_ (approved, harmless residue). Admin's Orario grid now has definitivo{Lun-1:Matematica, Lun-2:Italiano} and settimana{Mar-1:Storia, week_label:'Settimana 20-24 Gen'}. Personal override for the UI test student on Lun-1='Ripasso Mate'.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All new-feature endpoints verified: GET/POST /api/admin/ai-settings uses `google_ai_configured` boolean (Groq removed). Orario: GET /api/orario (public, returns active_type+grid+my_overrides+days+hours), GET /api/admin/orario (staff, all 3 grids), POST /api/admin/orario body {type,grid,week_label}, POST /api/admin/orario/active {type}, POST /api/orario/personal {cell,subject,note} (empty deletes). DM: GET /api/dm/contacts, GET|POST /api/dm/messages/{other_id} (staff<->staff and student<->student => 403). Role cycling: POST /api/admin/users/{uid}/role/{admin|professore|member}. Frontend testids stable: ai-status-badge, groq-key-input, save-groq-key-btn, remove-groq-key-btn, guide-ruoli-trigger, tab-orario, tab-guide, orario-widget, orario-widget-cell-{d}-{h}, orario-personal-subject-input, orario-personal-note-input, orario-personal-save-btn, orario-cell-{type}-{d}-{h}, orario-save-{type}, orario-set-active-{type}, orario-week-label-input, dm-contact-{id}, dm-input, dm-send-btn, dm-message, role-{userId}.",
+  "rca of the issue": "N/A — no bugs discovered."
+}

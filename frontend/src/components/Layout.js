@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { LayoutDashboard, CalendarCheck, BrainCircuit, MessagesSquare, Newspaper, StickyNote, Shield, Download, Sun, Moon, LogOut, Menu, X, WifiOff } from "lucide-react";
+import { LayoutDashboard, CalendarCheck, BrainCircuit, MessagesSquare, Newspaper, StickyNote, Shield, Download, Sun, Moon, LogOut, Menu, X, WifiOff, Mail } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useOnline } from "@/hooks/useOnline";
 import { api } from "@/lib/api";
+import { isStaff } from "@/lib/roles";
 import { LOGO } from "@/App";
 import P2PLayer from "@/components/P2PLayer";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,7 @@ const NAV = [
   { to: "/study", label: "Aiuto Studio", icon: BrainCircuit },
   { to: "/news", label: "News", icon: Newspaper },
   { to: "/reminders", label: "Reminder", icon: StickyNote },
+  { to: "/messaggi", label: "Messaggi", icon: Mail },
   { to: "/chat", label: "Canale", icon: MessagesSquare },
   { to: "/install", label: "Installa App", icon: Download },
 ];
@@ -30,7 +32,7 @@ export default function Layout({ children }) {
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
   const online = useOnline();
-  const links = user?.role === "admin" ? [...NAV, { to: "/admin", label: "Admin", icon: Shield }] : NAV;
+  const links = isStaff(user?.role) ? [...NAV, { to: "/admin", label: "Admin", icon: Shield }] : NAV;
 
   // Cache-warming: quando online, precarica i dati read-only per la modalità offline (via service worker)
   useEffect(() => {

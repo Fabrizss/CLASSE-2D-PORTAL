@@ -7,6 +7,7 @@ import { api, errMsg, requireOnline } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { playP2P } from "@/components/P2PLayer";
 import { getAppMode, applyAppMode, clearServiceWorkerCache } from "@/lib/appMode";
+import { OrarioWidget } from "@/components/OrarioWidget";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
@@ -167,7 +168,8 @@ export default function Dashboard() {
       </motion.div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {tiles.map((t) => (          <motion.div key={t.to} variants={item}>
+        {tiles.map((t) => (
+          <motion.div key={t.to} variants={item}>
             <Link to={t.to} data-testid={`tile-${t.label.toLowerCase().split(" ")[0]}`}>
               <Card className={`p-6 h-full border-border transition-all hover:-translate-y-1 hover:shadow-lg cursor-pointer ${t.bg}`}>
                 <div className="flex items-start justify-between">
@@ -181,6 +183,10 @@ export default function Dashboard() {
           </motion.div>
         ))}
       </div>
+
+      <motion.div variants={item}>
+        <OrarioWidget />
+      </motion.div>
 
       <motion.div variants={item}>
         <Card className="p-6 sm:p-8 border-border">

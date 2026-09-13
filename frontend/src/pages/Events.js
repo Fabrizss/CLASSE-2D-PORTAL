@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Link } from "react-router-dom";
+import { isStaff } from "@/lib/roles";
 
 const BANNER = "https://images.pexels.com/photos/20059728/pexels-photo-20059728.jpeg";
 const URGENCY = {
@@ -25,7 +26,7 @@ const URGENCY = {
 
 export default function Events() {
   const { user } = useAuth();
-  const canCreate = user?.role === "admin" || user?.can_create_events;
+  const canCreate = isStaff(user?.role) || user?.can_create_events;
   const [events, setEvents] = useState([]);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
