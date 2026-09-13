@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, X, Shield, ShieldOff, Star, Trash2, Clock, Ban, Unlock, MessageSquare, BookOpen, GraduationCap, CalendarClock } from "lucide-react";
+import { Check, X, Star, Trash2, Clock, Ban, Unlock, MessageSquare, BookOpen, CalendarClock } from "lucide-react";
 import { api, errMsg } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Card } from "@/components/ui/card";
@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { GuideSistemi } from "@/components/GuideSistemi";
 import { OrarioAdmin } from "@/components/OrarioAdmin";
 
@@ -38,8 +39,7 @@ export default function Admin() {
   const doBan = (mode, hours) => act(() => api.post(`/admin/users/${banTarget.id}/ban`, { mode, hours }), "Utente sospeso").then(() => setBanTarget(null));
 
   const isBanned = (u) => u.ban_permanent || (u.banned_until && u.banned_until > new Date().toISOString());
-  const nextRole = (r) => (r === "admin" ? "professore" : r === "professore" ? "member" : "admin");
-  const roleIcon = (r) => (r === "admin" ? <Shield size={16} /> : r === "professore" ? <GraduationCap size={16} /> : <ShieldOff size={16} />);
+  const ROLE_LABEL = { admin: "Admin", professore: "Professore", member: "Studente" };
 
   const pending = users.filter((u) => u.status === "pending");
   const others = users.filter((u) => u.status !== "pending");
@@ -73,9 +73,16 @@ export default function Admin() {
             <Button size="icon" variant="ghost" title="Autorizza a creare eventi"
               onClick={() => act(() => api.post(`/admin/users/${u.id}/authorize/${u.can_create_events ? 0 : 1}`), "Aggiornato")}
               data-testid={`authorize-${u.id}`}><Star size={16} className={u.can_create_events ? "text-amber-500 fill-amber-500" : ""} /></Button>
-            <Button size="icon" variant="ghost" title={`Ruolo: ${u.role} · clicca per cambiare`}
-              onClick={() => act(() => api.post(`/admin/users/${u.id}/role/${nextRole(u.role)}`), "Ruolo aggiornato")}
-              data-testid={`role-${u.id}`}>{roleIcon(u.role)}</Button>
+            <Select value={u.role} onValueChange={(role) => act(() => api.post(`/admin/users/${u.id}/role/${role}`), "Ruolo aggiornato")}>
+              <SelectTrigger className="h-9 w-[125px] rounded-full text-xs gap-1" data-testid={`role-${u.id}`}>
+                <SelectValue>{ROLE_LABEL[u.role]}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="admin">Admin</SelectItem>
+                <SelectItem value="professore">Professore</SelectItem>
+                <SelectItem value="member">Studente</SelectItem>
+              </SelectContent>
+            </Select>
             {isBanned(u) ? (
               <Button size="icon" variant="ghost" title="Rimuovi ban"
                 onClick={() => act(() => api.post(`/admin/users/${u.id}/unban`), "Ban rimosso")}
