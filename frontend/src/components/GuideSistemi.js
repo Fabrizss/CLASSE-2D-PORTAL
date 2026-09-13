@@ -126,6 +126,7 @@ create table course_team_members (
   team_id uuid references course_teams(id) on delete cascade,
   user_id uuid references users(id) on delete cascade,
   name text,
+  position text,
   primary key (team_id, user_id)
 );
 
@@ -280,9 +281,10 @@ export function GuideSistemi() {
           <AccordionItem value="ruoli">
             <AccordionTrigger data-testid="guide-ruoli-trigger" className="gap-2"><Users size={16} className="text-primary shrink-0" /> Ruoli, Orario e Messaggi privati</AccordionTrigger>
             <AccordionContent className="text-sm text-muted-foreground space-y-2">
-              <p><b>Ruoli:</b> Admin (controllo completo), Professore (stessi permessi di un admin: eventi, news, moderazione, orario, chiave AI, più la possibilità di scrivere in privato agli studenti), Membro (studente). Cambia ruolo cliccando l'icona ruolo nella tab "Tutti i membri" (Scudo → Laurea → X → Scudo).</p>
+              <p><b>Ruoli:</b> Admin (controllo completo), Professore (stessi permessi di un admin: eventi, news, moderazione, orario, chiave AI, più la possibilità di scrivere in privato agli studenti), Studente (membro). Cambia ruolo scegliendolo dal menu a tendina accanto a ogni utente nella tab "Tutti i membri".</p>
               <p><b>Orario:</b> nella tab "Orario" gestisci tre versioni (Provvisorio, Settimana specifica, Definitivo) e scegli quale è "attiva": quella appare nel widget Orario della Dashboard di tutti. Ogni studente può aggiungere sopra un appunto o una materia personale, visibile solo a lui.</p>
               <p><b>Messaggi privati:</b> Admin e Professori trovano in "Messaggi" l'elenco degli studenti approvati e possono scrivere in privato; lo studente riceve una notifica push e trova la chat nella sua pagina "Messaggi".</p>
+              <p><b>Squadre e formazioni:</b> nel Pannello Corso di ogni iscrizione, le squadre di calcio e pallavolo mostrano un campo stilizzato dove assegnare ogni giocatore a una posizione (portiere/difesa/centrocampo/attacco o zone 1-6); basket e sport generico restano a lista semplice.</p>
             </AccordionContent>
           </AccordionItem>
           <AccordionItem value="github">
