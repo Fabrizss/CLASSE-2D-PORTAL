@@ -4,7 +4,15 @@
 Portale gestione classe "NOI DI 2D" (scuola, italiano), design moderno/minimalista Liquid Glass viola. Iscrizioni eventi con urgenza + notifiche push (Web Push PWA) + email, aiuto studio AI (interrogazioni, upload file, flashcards), canale pubblico censurato, azioni divertenti tra compagni in tempo reale, canale news con allegati, pannello admin con approvazione membri e ban.
 
 ## Stack
-React + FastAPI + MongoDB. Auth JWT (localStorage Bearer). AI: Gemini 3.1 Pro via Emergent LLM key. Email: Resend (opzionale). Web Push: pywebpush/VAPID. Object storage: Emergent objstore per allegati news.
+React + FastAPI + PostgreSQL (Supabase, via asyncpg — migrato da MongoDB il 2026-09-17). Auth JWT (localStorage Bearer). AI: Google Gemini (admin-configurabile) con fallback Emergent LLM key. Email: Resend (opzionale). Web Push: pywebpush/VAPID. Object storage: Emergent objstore per allegati news.
+
+## Implemented (2026-09-17, migrazione DB)
+- Backend riscritto completamente da MongoDB/Motor a PostgreSQL/asyncpg (Supabase). `DATABASE_URL` in backend/.env. Pool asyncpg con `_init_conn` per codec jsonb, helper `clean()`/`clean_many()` per serializzare UUID/datetime nelle risposte JSON.
+- Tutti gli endpoint verificati (27/27 test pytest in `/app/backend/tests/test_postgres_migration.py`): auth, admin/users, eventi+iscrizioni, pannello corso (squadre/formazioni/posizioni/sondaggi/chat), chat pubblica, messaggi privati, orario, news, reminder, interrogazioni, azioni P2P, AI settings, study.
+- Account prof@noidi2d.it / ProfNoi2D! ricreato manualmente sul nuovo DB (dati Mongo precedenti non migrati, solo Admin auto-seed da .env).
+- Fix cosmetico: pluralizzazione "1 evento" vs "N eventi" in Dashboard.js.
+- Nota nota in test: il servizio mongodb resta avviato in supervisor ma non più usato dal backend (leftover innocuo).
+- Nota UX: se la Dashboard mostra un conteggio eventi non aggiornato, è la cache PWA offline stantia — usare toggle "Cloud" o "Ricarica cache dal server".
 
 ## Personas
 - Admin: gestisce membri (approva/ban/ruoli/autorizzazioni), crea eventi/news, modera chat.

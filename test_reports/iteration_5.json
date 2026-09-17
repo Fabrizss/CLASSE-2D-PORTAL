@@ -1,0 +1,40 @@
+{
+  "summary": "Post Supabase/Postgres migration regression testing. Backend: 27/27 pytest cases PASS on the new test_postgres_migration.py covering auth (login admin/prof/student, wrong password, register->pending->approve->login), admin users (list, role change admin/professore/member, ban temp/unban, delete, student blocked from /admin), events (create with options, signup with option, invalid option 400, event visible with my_option), course panel (create team calcio7, add member, set position POR, poll create+vote, course chat), public chat (post+censor, bulk delete), DM (staff<->staff blocked 403, staff->student OK, contacts), orario (get, admin save+activate, personal override persisted), news (create/list/delete), reminders CRUD, interrogazioni CRUD, P2P actions with 4s anti-spam + inbox, AI settings, study/upload text. All Postgres/asyncpg endpoints serialize UUID/datetime correctly (clean() helper works). Frontend UI smoke test PASS: admin login, dashboard renders (Iscrizioni card, Orario widget, Modalità app cloud/PWA toggle, Ricarica cache button all functional), Iscrizioni page shows Torneo Calcetto with 2 signups + Squadra A/B option counts, Admin panel > Tutti i membri shows 3 role buttons and 3 ban-related buttons (data-testids role-{id} present), Messaggi shows DM contacts, Study/Chat/News pages load without errors. Investigated the 'Iscrizioni: 0 eventi' concern reported by main agent: it is NOT a bug — it was caused by PWA (offline) mode having a stale service-worker cache from before the event was created; switching to Cloud mode (or clicking 'Ricarica cache dal server') immediately shows '1 eventi'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard cards", "issues": ["Grammar: '1 eventi' should be '1 evento' (singular). Consider pluralization helper in Dashboard.js line 99 where sub is built as `${events.length} eventi`."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_postgres_migration.py",
+    "/app/test_reports/pytest/postgres_migration.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: fix pluralization on Dashboard.js:99 -> `${events.length} ${events.length === 1 ? 'evento' : 'eventi'}` (cosmetic).",
+    "OPTIONAL: consider auto-invalidating PWA cache on Iscrizioni list after user creates an event to avoid the '0 eventi' confusion reported by user."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1286 lines — consider splitting into routers (auth, admin, events, course, chat, dm, orario, news, study, actions) for maintainability. All CRUD works but monolithic.",
+    "server.py uses `@app.on_event('startup'/'shutdown')` which is deprecated in FastAPI >=0.93 — recommend migrating to lifespan context manager (not blocking, just a warning).",
+    "server.py `get_events` computes `option_counts` in Python by scanning all signups; fine at current scale but a GROUP BY at SQL level would be more scalable when signups grow.",
+    "server.py signup_event has a race window between counting other_count and inserting when at capacity (no transaction / row lock). Under high concurrency two users can slip past capacity. Consider `SELECT ... FOR UPDATE` inside a transaction or a unique constraint + check.",
+    "server.py get_events fetches all signups for ALL events every call — O(N*M). Fine for a class portal but flagged for scale.",
+    "server.py dm_thread_id uses sorted string concat of UUIDs — OK but a composite key (least_uuid,greatest_uuid) would be more index-friendly.",
+    "server.py study/chat uses emergentintegrations LlmChat only if Google key NOT configured — since Google key is preferred and admin can set it via UI, ensure /api/admin/ai-settings config is persisted (it is, into app_settings). Verified.",
+    "Postgres migration correctness: `clean()` handles uuid.UUID and datetime, jsonb codec registered for grid/attachments/messages arrays — no leftover Mongo `_id` in any response. Confirmed via all 27 passing tests.",
+    "The mongodb supervisor service is still running but unused. Not harmful, but could be disabled to save memory."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_postgres_migration.py (new comprehensive regression suite)"
+  ],
+  "success_rate": {"backend": "100% (27/27)", "frontend": "100% smoke pass"},
+  "test_credentials": "Admin admin@noidi2d.it / AdminNoi2D! ; Prof prof@noidi2d.it / ProfNoi2D! ; Studente studente.test@noidi2d.it / Studente123! — all approved.",
+  "seed_data_creation": "Tests use TEST_ prefixed transient users/events; TestAuth/TestAdminUsers delete them at end. Long-lived data seeded by main agent (Torneo Calcetto + Squadra A/B, prof user) preserved.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Postgres/Supabase migration is fully functional. Every migrated endpoint has been exercised via pytest suite at /app/backend/tests/test_postgres_migration.py — reuse it as smoke regression. Key learnings: (1) The 'Iscrizioni: 0 eventi' report was caused by PWA offline mode caching an empty response — not a backend bug; the Cloud mode + 'Ricarica cache dal server' both work. (2) admin/users role dropdown is actually 3 cyclable buttons with data-testid=role-{userId}, not a <select>. (3) DM staff<->staff and student<->student both return 403 as designed. (4) capacity race under high concurrency in signup_event (see code review comment). Testids stable per iteration_4: role-{id}, ban-*, dm-contact-{id}, dm-input, dm-send-btn, orario-widget, orario-cell-*, orario-save-*, orario-set-active-*, orario-personal-*.",
+  "rca of the issue": "'Iscrizioni: 0 eventi' on the dashboard while /events shows the Torneo Calcetto: ROOT CAUSE = the PWA (offline) mode was active in localStorage, service worker returned a cached empty /api/events response from before the event was created. Reproduction: set localStorage app_mode=pwa, load dashboard when cache is stale => 0 eventi. Mitigation: click 'Ricarica cache dal server' OR toggle to Cloud mode. Both were verified working in this iteration. Not a backend bug — recommend E1 add auto-invalidate of the /events cache when the user creates/deletes an event."
+}

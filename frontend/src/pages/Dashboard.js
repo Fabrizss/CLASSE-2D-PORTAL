@@ -96,7 +96,7 @@ export default function Dashboard() {
   };
 
   const tiles = [
-    { to: "/events", label: "Iscrizioni", icon: CalendarCheck, sub: `${events.length} eventi`, bg: "bg-primary text-primary-foreground border-0" },
+    { to: "/events", label: "Iscrizioni", icon: CalendarCheck, sub: `${events.length} ${events.length === 1 ? "evento" : "eventi"}`, bg: "bg-primary text-primary-foreground border-0" },
     { to: "/study", label: "Aiuto Studio AI", icon: BrainCircuit, sub: "Interrogazioni & flashcard", bg: "" },
     { to: "/chat", label: "Canale Pubblico", icon: MessagesSquare, sub: "Chat sicura & censurata", bg: "" },
   ];
