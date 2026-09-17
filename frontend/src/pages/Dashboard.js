@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { CalendarCheck, BrainCircuit, MessagesSquare, Users, FileText, Droplets, Pizza, Heart, Hand, ArrowUpRight, Megaphone, RefreshCw, Cloud, WifiOff } from "lucide-react";
+import { CalendarCheck, BrainCircuit, MessagesSquare, Users, FileText, Droplets, Pizza, Heart, Hand, ArrowUpRight, Megaphone, RefreshCw } from "lucide-react";
 import { api, errMsg, requireOnline } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { playP2P } from "@/components/P2PLayer";
-import { getAppMode, applyAppMode, clearServiceWorkerCache } from "@/lib/appMode";
+import { clearServiceWorkerCache, registerServiceWorker } from "@/lib/appMode";
 import { OrarioWidget } from "@/components/OrarioWidget";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -41,7 +41,6 @@ export default function Dashboard() {
   const [sending, setSending] = useState(false);
   const [quote] = useState(() => QUOTES[Math.floor(Math.random() * QUOTES.length)]);
   const [avvisi, setAvvisi] = useState([]);
-  const [mode, setMode] = useState(getAppMode());
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -65,29 +64,13 @@ export default function Dashboard() {
     }
   };
 
-  const changeMode = async (m) => {
-    if (m === mode || busy) return;
-    setBusy(true);
-    try {
-      await applyAppMode(m);
-      setMode(m);
-      toast.success(m === "pwa" ? "Modalità PWA attivata: ricarico…" : "Modalità Cloud attivata: ricarico…");
-      setTimeout(() => window.location.reload(), 600);
-    } catch (e) {
-      toast.error("Errore nel cambiare modalità");
-      setBusy(false);
-    }
-  };
-
   const reloadCache = async () => {
     if (busy) return;
     setBusy(true);
     try {
       await clearServiceWorkerCache();
-      if (mode === "pwa" && "serviceWorker" in navigator) {
-        try { await navigator.serviceWorker.register("/sw.js"); } catch (e) {}
-      }
-      toast.success("Cache svuotata! Ricarico la pagina…");
+      await registerServiceWorker();
+      toast.success("Backup aggiornato! Ricarico la pagina…");
       setTimeout(() => window.location.reload(), 600);
     } catch (e) {
       toast.error("Errore nel ricaricare la cache");
@@ -139,31 +122,15 @@ export default function Dashboard() {
         <Card className="p-6 border-border" data-testid="app-mode-card">
           <div className="flex items-center gap-2 mb-1">
             <RefreshCw size={18} className="text-primary" />
-            <h2 className="font-head text-xl font-bold tracking-tight">Modalità app</h2>
+            <h2 className="font-head text-xl font-bold tracking-tight">Sempre online, con backup automatico</h2>
           </div>
           <p className="text-muted-foreground text-sm mb-4">
-            Scegli come NOI DI 2D carica i dati su questo dispositivo. La scelta resta salvata e puoi cambiarla quando vuoi.
+            NOI DI 2D scarica sempre i dati più recenti dal server. Ad ogni aggiornamento salva in automatico una copia sul dispositivo:
+            se perdi la connessione vedrai quella copia in sola lettura, con un avviso in alto, finché la connessione non torna.
           </p>
-          <div className="flex flex-wrap gap-3 items-center">
-            <div className="flex rounded-full border border-border p-1 bg-secondary/40">
-              <button onClick={() => changeMode("cloud")} disabled={busy} data-testid="mode-cloud-btn"
-                className={`px-4 py-1.5 rounded-full text-sm font-semibold transition-colors flex items-center gap-1.5 ${mode === "cloud" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
-                <Cloud size={14} /> Cloud
-              </button>
-              <button onClick={() => changeMode("pwa")} disabled={busy} data-testid="mode-pwa-btn"
-                className={`px-4 py-1.5 rounded-full text-sm font-semibold transition-colors flex items-center gap-1.5 ${mode === "pwa" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
-                <WifiOff size={14} /> PWA (offline)
-              </button>
-            </div>
-            <Button variant="outline" onClick={reloadCache} disabled={busy} data-testid="reload-cache-btn" className="rounded-full gap-2">
-              <RefreshCw size={15} className={busy ? "animate-spin" : ""} /> Ricarica cache dal server
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground mt-3">
-            {mode === "cloud"
-              ? "Cloud: l'app scarica sempre l'ultima versione dal server, nessuna cache offline."
-              : "PWA: l'app salva i dati per la modalità offline (chat, news e iscrizioni in sola lettura quando non c'è connessione)."}
-          </p>
+          <Button variant="outline" onClick={reloadCache} disabled={busy} data-testid="reload-cache-btn" className="rounded-full gap-2">
+            <RefreshCw size={15} className={busy ? "animate-spin" : ""} /> Aggiorna subito il backup
+          </Button>
         </Card>
       </motion.div>
 

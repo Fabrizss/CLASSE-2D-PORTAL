@@ -1,12 +1,5 @@
-const KEY = "noi_app_mode"; // "pwa" | "cloud"
-
-export function getAppMode() {
-  return localStorage.getItem(KEY) || "pwa";
-}
-
-export function setAppMode(mode) {
-  localStorage.setItem(KEY, mode);
-}
+// L'app lavora sempre online-first con backup automatico offline (service worker sempre attivo).
+// Nessuna modalità manuale: queste funzioni servono solo a forzare un refresh della cache.
 
 export async function clearServiceWorkerCache() {
   if ("serviceWorker" in navigator) {
@@ -19,10 +12,8 @@ export async function clearServiceWorkerCache() {
   }
 }
 
-export async function applyAppMode(mode) {
-  setAppMode(mode);
-  await clearServiceWorkerCache();
-  if (mode === "pwa" && "serviceWorker" in navigator) {
+export async function registerServiceWorker() {
+  if ("serviceWorker" in navigator) {
     try { await navigator.serviceWorker.register("/sw.js"); } catch (e) {}
   }
 }

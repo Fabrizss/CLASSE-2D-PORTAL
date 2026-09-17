@@ -36,10 +36,10 @@ export default function Layout({ children }) {
   const online = useOnline();
   const links = isStaff(user?.role) ? [...NAV, { to: "/admin", label: "Admin", icon: Shield }] : NAV;
 
-  // Cache-warming: quando online, precarica i dati read-only per la modalità offline (via service worker)
+  // Cache-warming: quando online, precarica i dati read-only per il backup automatico offline
   useEffect(() => {
     if (!online) return;
-    ["/chat/messages", "/news", "/events"].forEach((p) => api.get(p).catch(() => {}));
+    ["/chat/messages", "/news", "/events", "/orario"].forEach((p) => api.get(p).catch(() => {}));
   }, [online, loc.pathname]);
 
   const NavLinks = ({ onClick }) => (

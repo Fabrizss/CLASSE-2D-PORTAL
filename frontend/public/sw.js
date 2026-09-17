@@ -1,9 +1,9 @@
-const SHELL_CACHE = "noi-shell-v3";
-const API_CACHE = "noi-api-v3";
+const SHELL_CACHE = "noi-shell-v4";
+const API_CACHE = "noi-api-v4";
 const LOGO = "https://customer-assets.emergentagent.com/job_fd8a2fce-eb5b-4ab8-a990-d9b853fdd702/artifacts/oxjy3e6l_Gemini_Generated_Image_.png";
 
-// Endpoint GET da mettere in cache per la modalità offline (sola lettura)
-const CACHEABLE_API = ["/api/chat/messages", "/api/news", "/api/events"];
+// Endpoint GET da mettere in cache per il backup automatico offline (sola lettura)
+const CACHEABLE_API = ["/api/chat/messages", "/api/news", "/api/events", "/api/orario"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(SHELL_CACHE).then((c) => c.addAll(["/"]).catch(() => {})));
