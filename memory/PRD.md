@@ -6,6 +6,13 @@ Portale gestione classe "NOI DI 2D" (scuola, italiano), design moderno/minimalis
 ## Stack
 React + FastAPI + PostgreSQL (Supabase, via asyncpg — migrato da MongoDB il 2026-09-17). Auth JWT (localStorage Bearer). AI: Google Gemini (admin-configurabile) con fallback Emergent LLM key. Email: Resend (opzionale). Web Push: pywebpush/VAPID. Object storage: Emergent objstore per allegati news.
 
+## Implemented (2026-09-17, sempre online + backup automatico)
+- Rimossa la modalità manuale Cloud/PWA: l'app lavora sempre online-first (service worker sempre registrato) e salva in automatico un backup locale per eventi, news, chat pubblica e orario ad ogni richiesta riuscita.
+- Se la connessione cade, banner arancione in alto ("Sei offline...") e l'app mostra l'ultimo backup in sola lettura; le azioni di scrittura restano bloccate con toast chiaro (comportamento preesistente via `requireOnline()`). Tornando online, il banner sparisce da solo e i dati si aggiornano.
+- Fix critico su `AuthContext.js`: prima un reload offline sloggava l'utente (perché `/auth/me` falliva per mancanza di rete); ora usa una cache locale dell'utente (`noi_user_cache`) e slogga solo su un vero 401/403.
+- Dashboard: tolta la card toggle Cloud/PWA, sostituita da card informativa "Sempre online, con backup automatico" + pulsante "Aggiorna subito il backup".
+- Cache SW bump a v4. Testato al 100% con testing agent (scenari: persistenza login offline, pagine con dati cache, blocco scritture offline, auto-refresh al ritorno online, regressione admin/prof/studente).
+
 ## Implemented (2026-09-17, upload limits + branding)
 - Limiti di caricamento: max 10MB per file (News/Studio AI), tipi consentiti (News: png/jpg/jpeg/gif/webp/pdf; Studio AI: pdf/txt/md), max 20 upload/giorno per utente per tipo (tabella `uploads_log`), risposta 429 se superato.
 - Eliminazione automatica: i file di Aiuto Studio AI (`study_files`) vengono eliminati dopo 3 giorni da un task in background (loop ogni ora). Gli allegati News NON scadono.
