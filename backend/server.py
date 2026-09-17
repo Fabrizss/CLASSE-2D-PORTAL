@@ -74,6 +74,42 @@ async def load_ai_settings():
 def get_google_key():
     return _google_key_cache["key"]
 
+# ---------------- upload limits ----------------
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_UPLOADS_PER_DAY = 20
+NEWS_ALLOWED_EXT = {"png", "jpg", "jpeg", "gif", "webp", "pdf"}
+STUDY_ALLOWED_EXT = {"pdf", "txt", "md"}
+LOGO_ALLOWED_EXT = {"png", "jpg", "jpeg", "webp"}
+MAX_LOGO_SIZE = 5 * 1024 * 1024  # 5MB
+STUDY_FILE_MAX_AGE_DAYS = 3
+
+def file_ext(filename: str) -> str:
+    return (filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
+
+async def check_upload_limit(user_id: str, kind: str):
+    since = datetime.now(timezone.utc) - timedelta(days=1)
+    count = await pg_pool.fetchval(
+        "SELECT count(*) FROM uploads_log WHERE user_id=$1::uuid AND kind=$2 AND created_at > $3",
+        user_id, kind, since)
+    if count >= MAX_UPLOADS_PER_DAY:
+        raise HTTPException(429, f"Hai raggiunto il limite di {MAX_UPLOADS_PER_DAY} caricamenti al giorno. Riprova domani.")
+
+async def log_upload(user_id: str, kind: str, size: int):
+    await pg_pool.execute(
+        "INSERT INTO uploads_log (id,user_id,kind,size,created_at) VALUES ($1::uuid,$2::uuid,$3,$4,$5)",
+        str(uuid.uuid4()), user_id, kind, size, datetime.now(timezone.utc))
+
+async def study_files_cleanup_loop():
+    while True:
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=STUDY_FILE_MAX_AGE_DAYS)
+            deleted = await pg_pool.fetch("DELETE FROM study_files WHERE created_at < $1 RETURNING id", cutoff)
+            if deleted:
+                logger.info(f"Puliti {len(deleted)} file di Studio AI più vecchi di {STUDY_FILE_MAX_AGE_DAYS} giorni")
+        except Exception as e:
+            logger.warning(f"Cleanup study_files fallito: {e}")
+        await asyncio.sleep(3600)
+
 async def google_chat_reply(system: str, history: list, message: str) -> str:
     client = genai.Client(api_key=get_google_key())
     contents = [{"role": h["role"], "parts": [{"text": h["text"]}]} for h in history]
@@ -474,6 +510,48 @@ async def save_ai_settings(body: AISettingsIn, u: dict = Depends(require_admin))
     await load_ai_settings()
     return {"google_ai_configured": bool(key)}
 
+# ---------------- branding / logo ----------------
+@api.get("/branding")
+async def get_branding():
+    row = await pg_pool.fetchrow("SELECT logo_path, logo_updated_at FROM app_settings WHERE id='branding'")
+    if not row or not row["logo_path"]:
+        return {"logo_url": None}
+    ts = row["logo_updated_at"].timestamp() if row["logo_updated_at"] else 0
+    return {"logo_url": f"/api/branding/logo?v={int(ts)}"}
+
+@api.get("/branding/logo")
+async def get_branding_logo():
+    row = await pg_pool.fetchrow("SELECT logo_path, logo_content_type FROM app_settings WHERE id='branding'")
+    if not row or not row["logo_path"]:
+        raise HTTPException(404, "Nessun logo personalizzato")
+    data, ct = await asyncio.to_thread(get_object, row["logo_path"])
+    return Response(content=data, media_type=row["logo_content_type"] or ct)
+
+@api.post("/admin/logo")
+async def upload_logo(file: UploadFile = File(...), u: dict = Depends(require_admin)):
+    ext = file_ext(file.filename)
+    if ext not in LOGO_ALLOWED_EXT:
+        raise HTTPException(400, f"Formato non consentito. Usa: {', '.join(sorted(LOGO_ALLOWED_EXT))}")
+    data = await file.read()
+    if len(data) > MAX_LOGO_SIZE:
+        raise HTTPException(400, f"Immagine troppo grande (max {MAX_LOGO_SIZE // (1024*1024)}MB)")
+    path = f"{APP_NAME}/branding/logo_{uuid.uuid4()}.{ext}"
+    ct = file.content_type or "image/png"
+    await asyncio.to_thread(put_object, path, data, ct)
+    now = datetime.now(timezone.utc)
+    await pg_pool.execute(
+        "INSERT INTO app_settings (id, logo_path, logo_content_type, logo_updated_at) VALUES ('branding',$1,$2,$3) "
+        "ON CONFLICT (id) DO UPDATE SET logo_path=$1, logo_content_type=$2, logo_updated_at=$3",
+        path, ct, now)
+    return {"logo_url": f"/api/branding/logo?v={int(now.timestamp())}"}
+
+@api.delete("/admin/logo")
+async def reset_logo(u: dict = Depends(require_admin)):
+    await pg_pool.execute(
+        "INSERT INTO app_settings (id, logo_path, logo_content_type, logo_updated_at) VALUES ('branding',NULL,NULL,NULL) "
+        "ON CONFLICT (id) DO UPDATE SET logo_path=NULL, logo_content_type=NULL, logo_updated_at=NULL")
+    return {"ok": True}
+
 # ---------------- events / iscrizioni ----------------
 @api.get("/events")
 async def get_events(u: dict = Depends(require_approved)):
@@ -852,11 +930,17 @@ def get_object(path: str):
 # ---------------- news ----------------
 @api.post("/news/upload")
 async def news_upload(file: UploadFile = File(...), u: dict = Depends(require_admin)):
+    await check_upload_limit(u["id"], "news")
+    ext = file_ext(file.filename)
+    if ext not in NEWS_ALLOWED_EXT:
+        raise HTTPException(400, f"Tipo di file non consentito. Usa: {', '.join(sorted(NEWS_ALLOWED_EXT))}")
     data = await file.read()
-    ext = file.filename.split(".")[-1] if "." in (file.filename or "") else "bin"
+    if len(data) > MAX_UPLOAD_SIZE:
+        raise HTTPException(400, f"File troppo grande (max {MAX_UPLOAD_SIZE // (1024*1024)}MB)")
     path = f"{APP_NAME}/news/{uuid.uuid4()}.{ext}"
     ct = file.content_type or "application/octet-stream"
     result = await asyncio.to_thread(put_object, path, data, ct)
+    await log_upload(u["id"], "news", len(data))
     return {"path": result["path"], "filename": file.filename, "content_type": ct, "size": result.get("size", len(data))}
 
 @api.get("/news")
@@ -1144,11 +1228,17 @@ def make_chat(session_id: str, system: str) -> LlmChat:
 
 @api.post("/study/upload")
 async def study_upload(file: UploadFile = File(...), u: dict = Depends(require_approved)):
-    data = await file.read()
-    text = ""
+    await check_upload_limit(u["id"], "study")
     fname = (file.filename or "file").lower()
+    ext = file_ext(fname)
+    if ext not in STUDY_ALLOWED_EXT:
+        raise HTTPException(400, f"Tipo di file non supportato. Usa: {', '.join(sorted(STUDY_ALLOWED_EXT))}")
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_SIZE:
+        raise HTTPException(400, f"File troppo grande (max {MAX_UPLOAD_SIZE // (1024*1024)}MB)")
+    text = ""
     try:
-        if fname.endswith(".pdf"):
+        if ext == "pdf":
             reader = PdfReader(io.BytesIO(data))
             text = "\n".join((p.extract_text() or "") for p in reader.pages)
         else:
@@ -1162,6 +1252,7 @@ async def study_upload(file: UploadFile = File(...), u: dict = Depends(require_a
     await pg_pool.execute(
         "INSERT INTO study_files (id,user_id,filename,text,created_at) VALUES ($1::uuid,$2::uuid,$3,$4,$5)",
         fid, u["id"], file.filename, text, datetime.now(timezone.utc))
+    await log_upload(u["id"], "study", len(data))
     return {"file_id": fid, "filename": file.filename, "chars": len(text)}
 
 @api.post("/study/flashcards")
@@ -1267,6 +1358,7 @@ async def startup():
     except Exception as e:
         logger.warning(f"Storage init failed: {e}")
     await load_ai_settings()
+    asyncio.create_task(study_files_cleanup_loop())
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@noidi2d.it").lower()
     admin_pw = os.environ.get("ADMIN_PASSWORD", "AdminNoi2D!")
     existing = await pg_pool.fetchrow("SELECT * FROM users WHERE email=$1", admin_email)

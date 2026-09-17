@@ -158,9 +158,28 @@ create table course_chat (
 
 create table app_settings (
   id text primary key,
-  google_ai_api_key text
+  google_ai_api_key text,
+  logo_path text,
+  logo_content_type text,
+  logo_updated_at timestamptz
 );
 insert into app_settings (id, google_ai_api_key) values ('ai', null) on conflict (id) do nothing;
+
+create table study_files (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references users(id) on delete cascade,
+  filename text,
+  text text,
+  created_at timestamptz default now()
+);
+
+create table uploads_log (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references users(id) on delete cascade,
+  kind text not null,
+  size integer,
+  created_at timestamptz default now()
+);
 
 create table orario_settings (
   type text primary key check (type in ('provvisorio','settimana','definitivo')),
@@ -202,6 +221,8 @@ alter table interrogazioni enable row level security;
 alter table reminders enable row level security;
 alter table avvisi enable row level security;
 alter table push_subscriptions enable row level security;
+alter table study_files enable row level security;
+alter table uploads_log enable row level security;
 alter table course_reps enable row level security;
 alter table course_teams enable row level security;
 alter table course_team_members enable row level security;
@@ -285,6 +306,8 @@ export function GuideSistemi() {
               <p><b>Orario:</b> nella tab "Orario" gestisci tre versioni (Provvisorio, Settimana specifica, Definitivo) e scegli quale è "attiva": quella appare nel widget Orario della Dashboard di tutti. Ogni studente può aggiungere sopra un appunto o una materia personale, visibile solo a lui.</p>
               <p><b>Messaggi privati:</b> Admin e Professori trovano in "Messaggi" l'elenco degli studenti approvati e possono scrivere in privato; lo studente riceve una notifica push e trova la chat nella sua pagina "Messaggi".</p>
               <p><b>Squadre e formazioni:</b> nel Pannello Corso di ogni iscrizione, le squadre di calcio e pallavolo mostrano un campo stilizzato dove assegnare ogni giocatore a una posizione (portiere/difesa/centrocampo/attacco o zone 1-6); basket e sport generico restano a lista semplice.</p>
+              <p><b>Limiti di caricamento:</b> ogni utente può caricare fino a 20 file al giorno (allegati News, file per Studio AI), max 10MB ciascuno; formati ammessi: immagini/PDF per le News, PDF/TXT/MD per Studio AI. I file di Studio AI vengono eliminati automaticamente dopo 3 giorni.</p>
+              <p><b>Logo dell'app:</b> nella tab "Personalizza" puoi caricare un'immagine (PNG/JPG/WEBP, max 5MB) per sostituire il logo ovunque nell'app, o ripristinare quello predefinito.</p>
             </AccordionContent>
           </AccordionItem>
           <AccordionItem value="github">

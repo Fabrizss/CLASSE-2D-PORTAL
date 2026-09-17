@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api, errMsg } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
+import { useBranding } from "@/context/BrandingContext";
 import { LOGO } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +14,7 @@ import { Sparkles } from "lucide-react";
 
 export default function Auth() {
   const { login } = useAuth();
+  const { logoUrl } = useBranding();
   const nav = useNavigate();
   const [tab, setTab] = useState("login");
   const [loading, setLoading] = useState(false);
@@ -46,7 +48,7 @@ export default function Auth() {
         <div className="absolute -top-24 -right-24 w-96 h-96 rounded-full bg-white/10 blur-2xl" />
         <div className="absolute bottom-10 -left-20 w-80 h-80 rounded-full bg-fuchsia-400/20 blur-3xl" />
         <div className="flex items-center gap-3 relative z-10">
-          <img src={LOGO} alt="logo" className="w-11 h-11 rounded-full ring-2 ring-white/30" />
+          <img src={logoUrl || LOGO} alt="logo" className="w-11 h-11 rounded-full ring-2 ring-white/30" />
           <span className="font-head font-extrabold text-xl">NOI DI 2D</span>
         </div>
         <div className="relative z-10">
@@ -65,7 +67,7 @@ export default function Auth() {
       <div className="flex items-center justify-center p-6 sm:p-12">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-sm">
           <div className="lg:hidden flex items-center gap-2.5 mb-8">
-            <img src={LOGO} alt="logo" className="w-10 h-10 rounded-full ring-1 ring-primary/20" />
+            <img src={logoUrl || LOGO} alt="logo" className="w-10 h-10 rounded-full ring-1 ring-primary/20" />
             <span className="font-head font-extrabold text-lg">NOI DI <span className="text-primary">2D</span></span>
           </div>
           <h2 className="font-head text-3xl font-bold tracking-tight">

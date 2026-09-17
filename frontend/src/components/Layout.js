@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { LayoutDashboard, CalendarCheck, BrainCircuit, MessagesSquare, Newspaper, StickyNote, Shield, Download, Sun, Moon, LogOut, Menu, X, WifiOff, Mail } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { useBranding } from "@/context/BrandingContext";
 import { useOnline } from "@/hooks/useOnline";
 import { api } from "@/lib/api";
 import { isStaff } from "@/lib/roles";
@@ -22,7 +23,8 @@ const NAV = [
 ];
 
 export function Logo({ size = 34 }) {
-  return <img src={LOGO} alt="NOI DI 2D" width={size} height={size}
+  const { logoUrl } = useBranding();
+  return <img src={logoUrl || LOGO} alt="NOI DI 2D" width={size} height={size}
     className="rounded-full object-cover shadow-sm ring-1 ring-primary/20" style={{ width: size, height: size }} />;
 }
 

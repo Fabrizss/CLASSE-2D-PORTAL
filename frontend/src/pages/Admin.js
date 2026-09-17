@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, X, Star, Trash2, Clock, Ban, Unlock, MessageSquare, BookOpen, CalendarClock } from "lucide-react";
+import { Check, X, Star, Trash2, Clock, Ban, Unlock, MessageSquare, BookOpen, CalendarClock, Palette } from "lucide-react";
 import { api, errMsg } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Card } from "@/components/ui/card";
@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { GuideSistemi } from "@/components/GuideSistemi";
 import { OrarioAdmin } from "@/components/OrarioAdmin";
+import { BrandingAdmin } from "@/components/BrandingAdmin";
 
 const STATUS = {
   pending: { label: "In attesa", cls: "bg-amber-500/15 text-amber-600 border-amber-500/30" },
@@ -113,6 +114,7 @@ export default function Admin() {
           </TabsTrigger>
           <TabsTrigger value="all" data-testid="tab-all">Tutti i membri</TabsTrigger>
           <TabsTrigger value="orario" data-testid="tab-orario" className="gap-2"><CalendarClock size={15} /> Orario</TabsTrigger>
+          <TabsTrigger value="personalizza" data-testid="tab-personalizza" className="gap-2"><Palette size={15} /> Personalizza</TabsTrigger>
           <TabsTrigger value="guide" data-testid="tab-guide" className="gap-2"><BookOpen size={15} /> Guide e Sistemi</TabsTrigger>
         </TabsList>
         <TabsContent value="pending" className="mt-6 space-y-3">
@@ -124,6 +126,9 @@ export default function Admin() {
         </TabsContent>
         <TabsContent value="orario" className="mt-6">
           <OrarioAdmin />
+        </TabsContent>
+        <TabsContent value="personalizza" className="mt-6">
+          <BrandingAdmin />
         </TabsContent>
         <TabsContent value="guide" className="mt-6">
           <GuideSistemi />

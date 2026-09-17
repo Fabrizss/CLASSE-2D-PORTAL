@@ -2,6 +2,7 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { BrandingProvider } from "@/context/BrandingContext";
 import Layout from "@/components/Layout";
 import Auth from "@/pages/Auth";
 import Dashboard from "@/pages/Dashboard";
@@ -57,10 +58,12 @@ function Shell() {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <Shell />
-        <Toaster position="top-center" richColors />
-      </BrowserRouter>
+      <BrandingProvider>
+        <BrowserRouter>
+          <Shell />
+          <Toaster position="top-center" richColors />
+        </BrowserRouter>
+      </BrandingProvider>
     </AuthProvider>
   );
 }
