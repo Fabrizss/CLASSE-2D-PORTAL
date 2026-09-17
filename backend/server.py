@@ -15,9 +15,9 @@ import jwt
 import bcrypt
 import resend
 import requests
+import asyncpg
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Form, Header, Query, Response
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
 from pywebpush import webpush, WebPushException
 from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -29,9 +29,28 @@ import io
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("noidi2d")
 
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# ---------------- database (Supabase / Postgres) ----------------
+DATABASE_URL = os.environ['DATABASE_URL']
+pg_pool: asyncpg.Pool = None
+
+async def _init_conn(conn):
+    await conn.set_type_codec('jsonb', encoder=json.dumps, decoder=json.loads, schema='pg_catalog', format='text')
+    await conn.set_type_codec('json', encoder=json.dumps, decoder=json.loads, schema='pg_catalog', format='text')
+
+def clean(row):
+    """Converte un Record asyncpg in un dict JSON-friendly (uuid->str, datetime->isoformat)."""
+    if row is None:
+        return None
+    d = dict(row)
+    for k, v in d.items():
+        if isinstance(v, uuid.UUID):
+            d[k] = str(v)
+        elif isinstance(v, datetime):
+            d[k] = v.isoformat()
+    return d
+
+def clean_many(rows):
+    return [clean(r) for r in rows]
 
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGO = "HS256"
@@ -49,8 +68,8 @@ GOOGLE_MODERATION_MODEL = "gemini-2.5-flash-lite"
 _google_key_cache = {"key": None}
 
 async def load_ai_settings():
-    doc = await db.app_settings.find_one({"_id": "ai"})
-    _google_key_cache["key"] = (doc or {}).get("google_ai_api_key") or None
+    row = await pg_pool.fetchrow("SELECT google_ai_api_key FROM app_settings WHERE id='ai'")
+    _google_key_cache["key"] = (row["google_ai_api_key"] if row else None) or None
 
 def get_google_key():
     return _google_key_cache["key"]
@@ -150,10 +169,10 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Sessione scaduta")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token non valido")
-    u = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
-    if not u:
+    row = await pg_pool.fetchrow("SELECT * FROM users WHERE id=$1::uuid", payload["sub"])
+    if not row:
         raise HTTPException(status_code=401, detail="Utente non trovato")
-    return u
+    return clean(row)
 
 async def require_approved(request: Request) -> dict:
     u = await get_current_user(request)
@@ -289,13 +308,13 @@ def censor(text: str) -> str:
 
 # ---------------- push ----------------
 async def send_push_to_all(title: str, body: str, url: str = "/"):
-    subs = await db.push_subscriptions.find({}, {"_id": 0}).to_list(1000)
+    subs = clean_many(await pg_pool.fetch("SELECT * FROM push_subscriptions"))
     await _push(subs, title, body, url)
 
 async def send_push_to_admins(title: str, body: str, url: str = "/"):
-    admins = await db.users.find({"role": "admin"}, {"_id": 0, "id": 1}).to_list(100)
-    ids = [a["id"] for a in admins]
-    subs = await db.push_subscriptions.find({"user_id": {"$in": ids}}, {"_id": 0}).to_list(1000)
+    rows = await pg_pool.fetch("SELECT id FROM users WHERE role='admin'")
+    ids = [str(r["id"]) for r in rows]
+    subs = clean_many(await pg_pool.fetch("SELECT * FROM push_subscriptions WHERE user_id = ANY($1::uuid[])", ids)) if ids else []
     await _push(subs, title, body, url)
 
 async def _push(subs, title, body, url):
@@ -311,7 +330,7 @@ async def _push(subs, title, body, url):
             )
         except WebPushException as e:
             if e.response is not None and e.response.status_code in (404, 410):
-                await db.push_subscriptions.delete_one({"endpoint": s.get("endpoint")})
+                await pg_pool.execute("DELETE FROM push_subscriptions WHERE endpoint=$1", s.get("endpoint"))
         except Exception as ex:
             logger.warning(f"push fail: {ex}")
 
@@ -353,24 +372,23 @@ COLORS = ["#7C3AED","#F472B6","#FBBF24","#34D399","#60A5FA","#F87171","#A78BFA",
 @api.post("/auth/register")
 async def register(body: RegisterIn):
     email = body.email.lower()
-    if await db.users.find_one({"email": email}):
+    existing = await pg_pool.fetchval("SELECT 1 FROM users WHERE email=$1", email)
+    if existing:
         raise HTTPException(status_code=400, detail="Email già registrata")
     uid = str(uuid.uuid4())
-    count = await db.users.count_documents({})
-    user = {
-        "id": uid, "name": body.name, "email": email,
-        "password_hash": hash_password(body.password),
-        "role": "member", "status": "pending", "can_create_events": False,
-        "avatar_color": COLORS[count % len(COLORS)],
-        "created_at": now_iso(),
-    }
-    await db.users.insert_one(user)
+    count = await pg_pool.fetchval("SELECT count(*) FROM users")
+    await pg_pool.execute(
+        "INSERT INTO users (id,name,email,password_hash,role,status,can_create_events,avatar_color,created_at) "
+        "VALUES ($1::uuid,$2,$3,$4,'member','pending',false,$5,$6)",
+        uid, body.name, email, hash_password(body.password), COLORS[count % len(COLORS)], datetime.now(timezone.utc),
+    )
     return {"message": "Registrazione ricevuta. Un admin deve approvare il tuo account prima dell'accesso."}
 
 @api.post("/auth/login")
 async def login(body: LoginIn):
     email = body.email.lower()
-    u = await db.users.find_one({"email": email})
+    row = await pg_pool.fetchrow("SELECT * FROM users WHERE email=$1", email)
+    u = clean(row)
     if not u or not verify_password(body.password, u["password_hash"]):
         raise HTTPException(status_code=401, detail="Credenziali non valide")
     if u["status"] == "pending":
@@ -389,40 +407,40 @@ async def me(u: dict = Depends(get_current_user)):
 # ---------------- users ----------------
 @api.get("/users")
 async def list_users(u: dict = Depends(require_approved)):
-    users = await db.users.find({"status": "approved"}, {"_id": 0}).to_list(1000)
+    users = clean_many(await pg_pool.fetch("SELECT * FROM users WHERE status='approved'"))
     return [public_user(x) for x in users if x["id"] != u["id"]]
 
 # ---------------- admin ----------------
 @api.get("/admin/users")
 async def admin_users(u: dict = Depends(require_admin)):
-    users = await db.users.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    users = clean_many(await pg_pool.fetch("SELECT * FROM users ORDER BY created_at DESC"))
     return [public_user(x) for x in users]
 
 @api.post("/admin/users/{uid}/approve")
 async def approve_user(uid: str, u: dict = Depends(require_admin)):
-    await db.users.update_one({"id": uid}, {"$set": {"status": "approved"}})
+    await pg_pool.execute("UPDATE users SET status='approved' WHERE id=$1::uuid", uid)
     return {"ok": True}
 
 @api.post("/admin/users/{uid}/reject")
 async def reject_user(uid: str, u: dict = Depends(require_admin)):
-    await db.users.update_one({"id": uid}, {"$set": {"status": "rejected"}})
+    await pg_pool.execute("UPDATE users SET status='rejected' WHERE id=$1::uuid", uid)
     return {"ok": True}
 
 @api.post("/admin/users/{uid}/role/{role}")
 async def set_role(uid: str, role: str, u: dict = Depends(require_admin)):
     if role not in ("admin", "member", "professore"):
         raise HTTPException(400, "Ruolo non valido")
-    await db.users.update_one({"id": uid}, {"$set": {"role": role}})
+    await pg_pool.execute("UPDATE users SET role=$1 WHERE id=$2::uuid", role, uid)
     return {"ok": True}
 
 @api.post("/admin/users/{uid}/authorize/{value}")
 async def authorize_events(uid: str, value: int, u: dict = Depends(require_admin)):
-    await db.users.update_one({"id": uid}, {"$set": {"can_create_events": bool(value)}})
+    await pg_pool.execute("UPDATE users SET can_create_events=$1 WHERE id=$2::uuid", bool(value), uid)
     return {"ok": True}
 
 @api.delete("/admin/users/{uid}")
 async def delete_user(uid: str, u: dict = Depends(require_admin)):
-    await db.users.delete_one({"id": uid})
+    await pg_pool.execute("DELETE FROM users WHERE id=$1::uuid", uid)
     return {"ok": True}
 
 @api.post("/admin/users/{uid}/ban")
@@ -430,15 +448,15 @@ async def ban_user(uid: str, body: BanIn, u: dict = Depends(require_admin)):
     if uid == u["id"]:
         raise HTTPException(400, "Non puoi bannare te stesso")
     if body.mode == "perm":
-        await db.users.update_one({"id": uid}, {"$set": {"ban_permanent": True, "banned_until": None}})
+        await pg_pool.execute("UPDATE users SET ban_permanent=true, banned_until=NULL WHERE id=$1::uuid", uid)
     else:
-        until = (datetime.now(timezone.utc) + timedelta(hours=max(1, body.hours))).isoformat()
-        await db.users.update_one({"id": uid}, {"$set": {"ban_permanent": False, "banned_until": until}})
+        until = datetime.now(timezone.utc) + timedelta(hours=max(1, body.hours))
+        await pg_pool.execute("UPDATE users SET ban_permanent=false, banned_until=$2 WHERE id=$1::uuid", uid, until)
     return {"ok": True}
 
 @api.post("/admin/users/{uid}/unban")
 async def unban_user(uid: str, u: dict = Depends(require_admin)):
-    await db.users.update_one({"id": uid}, {"$set": {"ban_permanent": False, "banned_until": None}})
+    await pg_pool.execute("UPDATE users SET ban_permanent=false, banned_until=NULL WHERE id=$1::uuid", uid)
     return {"ok": True}
 
 @api.get("/admin/ai-settings")
@@ -448,23 +466,31 @@ async def get_ai_settings(u: dict = Depends(require_admin)):
 @api.post("/admin/ai-settings")
 async def save_ai_settings(body: AISettingsIn, u: dict = Depends(require_admin)):
     key = body.api_key.strip()
-    await db.app_settings.update_one({"_id": "ai"}, {"$set": {"google_ai_api_key": key or None}}, upsert=True)
+    await pg_pool.execute(
+        "INSERT INTO app_settings (id, google_ai_api_key) VALUES ('ai',$1) "
+        "ON CONFLICT (id) DO UPDATE SET google_ai_api_key=$1",
+        key or None,
+    )
     await load_ai_settings()
     return {"google_ai_configured": bool(key)}
 
 # ---------------- events / iscrizioni ----------------
 @api.get("/events")
 async def get_events(u: dict = Depends(require_approved)):
-    events = await db.events.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    events = clean_many(await pg_pool.fetch("SELECT * FROM events ORDER BY created_at DESC"))
+    eids = [e["id"] for e in events]
+    signups_rows = clean_many(await pg_pool.fetch("SELECT * FROM event_signups WHERE event_id = ANY($1::uuid[])", eids)) if eids else []
+    by_event = {}
+    for s in signups_rows:
+        by_event.setdefault(s["event_id"], []).append(s)
     for e in events:
-        signs = e.get("signups", [])
+        signs = by_event.get(e["id"], [])
         mine = next((s for s in signs if s["user_id"] == u["id"]), None)
         e["signed_up"] = mine is not None
         e["my_option"] = mine.get("option") if mine else None
         e["signup_count"] = len(signs)
-        e["option_counts"] = {opt: sum(1 for s in signs if s.get("option") == opt) for opt in e.get("options", [])}
+        e["option_counts"] = {opt: sum(1 for s in signs if s.get("option") == opt) for opt in (e.get("options") or [])}
         e["can_manage"] = is_staff_role(u["role"]) or e["created_by"] == u["id"]
-        e.pop("signups", None)
     return events
 
 @api.post("/events")
@@ -472,30 +498,28 @@ async def create_event(body: EventIn, u: dict = Depends(require_approved)):
     if not is_staff_role(u["role"]) and not u.get("can_create_events"):
         raise HTTPException(403, "Non autorizzato a creare iscrizioni")
     eid = str(uuid.uuid4())
-    event = {
-        "id": eid, "title": body.title, "description": body.description,
-        "urgency": body.urgency, "deadline": body.deadline, "location": body.location,
-        "options": [o.strip() for o in body.options if o.strip()],
-        "capacity": body.capacity, "caps": {k: v for k, v in (body.caps or {}).items() if v},
-        "created_by": u["id"], "created_by_name": u["name"],
-        "signups": [], "created_at": now_iso(),
-    }
-    await db.events.insert_one(dict(event))
-    approved = await db.users.find({"status": "approved"}, {"_id": 0, "email": 1}).to_list(1000)
+    options = [o.strip() for o in body.options if o.strip()]
+    caps = {k: v for k, v in (body.caps or {}).items() if v}
+    row = await pg_pool.fetchrow(
+        "INSERT INTO events (id,title,description,urgency,deadline,location,options,capacity,caps,created_by,created_by_name,created_at) "
+        "VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10::uuid,$11,$12) RETURNING *",
+        eid, body.title, body.description, body.urgency, body.deadline, body.location,
+        options, body.capacity, caps, u["id"], u["name"], datetime.now(timezone.utc),
+    )
+    event = clean(row)
+    approved = await pg_pool.fetch("SELECT email FROM users WHERE status='approved'")
     emails = [a["email"] for a in approved]
     asyncio.create_task(send_event_email(event, emails))
     asyncio.create_task(send_push_to_all(
         f"Nuova iscrizione ({body.urgency})", body.title, "/events"))
-    event.pop("signups", None)
-    event.pop("_id", None)
     return {**event, "signup_count": 0, "signed_up": False, "my_option": None, "can_manage": True, "option_counts": {}}
 
 @api.post("/events/{eid}/signup")
 async def signup_event(eid: str, body: SignupIn, u: dict = Depends(require_approved)):
-    ev = await db.events.find_one({"id": eid})
+    ev = clean(await pg_pool.fetchrow("SELECT * FROM events WHERE id=$1::uuid", eid))
     if not ev:
         raise HTTPException(404, "Iscrizione non trovata")
-    opts = ev.get("options", [])
+    opts = ev.get("options") or []
     option = body.option
     if opts:
         if not option:
@@ -504,50 +528,62 @@ async def signup_event(eid: str, body: SignupIn, u: dict = Depends(require_appro
             raise HTTPException(400, "Opzione non valida")
     else:
         option = None
-    existing = next((s for s in ev.get("signups", []) if s["user_id"] == u["id"]), None)
-    signs = [s for s in ev.get("signups", []) if s["user_id"] != u["id"]]
+    existing = clean(await pg_pool.fetchrow("SELECT * FROM event_signups WHERE event_id=$1::uuid AND user_id=$2::uuid", eid, u["id"]))
     if existing and existing.get("option") == option:
+        await pg_pool.execute("DELETE FROM event_signups WHERE event_id=$1::uuid AND user_id=$2::uuid", eid, u["id"])
         signed = False
     else:
+        other_count = await pg_pool.fetchval(
+            "SELECT count(*) FROM event_signups WHERE event_id=$1::uuid AND user_id<>$2::uuid", eid, u["id"])
         cap = ev.get("capacity")
-        if cap and len(signs) >= cap:
+        if cap and other_count >= cap:
             raise HTTPException(400, "Posti esauriti per questo evento")
-        ocap = (ev.get("caps") or {}).get(option) if option else None
-        if ocap and sum(1 for s in signs if s.get("option") == option) >= ocap:
-            raise HTTPException(400, f"Posti esauriti per «{option}»")
-        signs.append({"user_id": u["id"], "name": u["name"], "avatar_color": u.get("avatar_color", "#7C3AED"), "option": option, "at": now_iso()})
+        if option:
+            ocap = (ev.get("caps") or {}).get(option)
+            if ocap:
+                ocount = await pg_pool.fetchval(
+                    "SELECT count(*) FROM event_signups WHERE event_id=$1::uuid AND option=$2 AND user_id<>$3::uuid",
+                    eid, option, u["id"])
+                if ocount >= ocap:
+                    raise HTTPException(400, f"Posti esauriti per «{option}»")
+        await pg_pool.execute(
+            "INSERT INTO event_signups (event_id,user_id,name,avatar_color,option,created_at) VALUES ($1::uuid,$2::uuid,$3,$4,$5,$6) "
+            "ON CONFLICT (event_id,user_id) DO UPDATE SET option=$5, name=$3, avatar_color=$4, created_at=$6",
+            eid, u["id"], u["name"], u.get("avatar_color", "#7C3AED"), option, datetime.now(timezone.utc))
         signed = True
-    await db.events.update_one({"id": eid}, {"$set": {"signups": signs}})
+    signs = clean_many(await pg_pool.fetch("SELECT * FROM event_signups WHERE event_id=$1::uuid", eid))
     oc = {opt: sum(1 for s in signs if s.get("option") == opt) for opt in opts}
     return {"signed_up": signed, "signup_count": len(signs), "my_option": option if signed else None, "option_counts": oc}
 
 @api.get("/events/{eid}/signups")
 async def event_signups(eid: str, u: dict = Depends(require_approved)):
-    ev = await db.events.find_one({"id": eid}, {"_id": 0})
+    ev = clean(await pg_pool.fetchrow("SELECT * FROM events WHERE id=$1::uuid", eid))
     if not ev:
         raise HTTPException(404, "Non trovata")
     if not is_staff_role(u["role"]) and ev["created_by"] != u["id"]:
         raise HTTPException(403, "Solo admin o organizzatore")
-    return {"signups": ev.get("signups", []), "options": ev.get("options", [])}
+    signs = clean_many(await pg_pool.fetch("SELECT * FROM event_signups WHERE event_id=$1::uuid ORDER BY created_at", eid))
+    return {"signups": signs, "options": ev.get("options") or []}
 
 @api.delete("/events/{eid}")
 async def delete_event(eid: str, u: dict = Depends(require_approved)):
-    ev = await db.events.find_one({"id": eid})
+    ev = clean(await pg_pool.fetchrow("SELECT * FROM events WHERE id=$1::uuid", eid))
     if not ev:
         raise HTTPException(404, "Non trovata")
     if not is_staff_role(u["role"]) and ev["created_by"] != u["id"]:
         raise HTTPException(403, "Non autorizzato")
-    await db.events.delete_one({"id": eid})
+    await pg_pool.execute("DELETE FROM events WHERE id=$1::uuid", eid)
     return {"ok": True}
 
 # ---------------- pannello corso (rappresentante, squadre, sondaggi, chat per evento) ----------------
-def event_participant_or_admin(ev: dict, u: dict) -> bool:
+async def event_participant_or_admin(eid: str, ev: dict, u: dict) -> bool:
     if is_staff_role(u["role"]) or ev["created_by"] == u["id"]:
         return True
-    return any(s["user_id"] == u["id"] for s in ev.get("signups", []))
+    row = await pg_pool.fetchval("SELECT 1 FROM event_signups WHERE event_id=$1::uuid AND user_id=$2::uuid", eid, u["id"])
+    return bool(row)
 
 async def get_event_or_404(eid: str) -> dict:
-    ev = await db.events.find_one({"id": eid})
+    ev = clean(await pg_pool.fetchrow("SELECT * FROM events WHERE id=$1::uuid", eid))
     if not ev:
         raise HTTPException(404, "Iscrizione non trovata")
     return ev
@@ -555,27 +591,40 @@ async def get_event_or_404(eid: str) -> dict:
 async def can_manage_course(eid: str, ev: dict, u: dict) -> bool:
     if is_staff_role(u["role"]) or ev["created_by"] == u["id"]:
         return True
-    rep = await db.course_reps.find_one({"event_id": eid})
-    return bool(rep and rep["user_id"] == u["id"])
+    rep = await pg_pool.fetchrow("SELECT user_id FROM course_reps WHERE event_id=$1::uuid", eid)
+    return bool(rep and str(rep["user_id"]) == u["id"])
 
 @api.get("/events/{eid}/course")
 async def get_course(eid: str, u: dict = Depends(require_approved)):
     ev = await get_event_or_404(eid)
-    if not event_participant_or_admin(ev, u):
+    if not await event_participant_or_admin(eid, ev, u):
         raise HTTPException(403, "Devi essere iscritto per accedere al pannello corso")
-    rep = await db.course_reps.find_one({"event_id": eid}, {"_id": 0})
-    teams = await db.course_teams.find({"event_id": eid}, {"_id": 0}).to_list(100)
-    polls = await db.course_polls.find({"event_id": eid}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    rep = clean(await pg_pool.fetchrow("SELECT * FROM course_reps WHERE event_id=$1::uuid", eid))
+    teams = clean_many(await pg_pool.fetch("SELECT * FROM course_teams WHERE event_id=$1::uuid ORDER BY created_at", eid))
+    tids = [t["id"] for t in teams]
+    members_rows = clean_many(await pg_pool.fetch("SELECT * FROM course_team_members WHERE team_id = ANY($1::uuid[])", tids)) if tids else []
+    members_by_team = {}
+    for m in members_rows:
+        members_by_team.setdefault(m["team_id"], []).append({"user_id": m["user_id"], "name": m["name"], "position": m.get("position")})
+    for t in teams:
+        t["members"] = members_by_team.get(t["id"], [])
+    polls = clean_many(await pg_pool.fetch("SELECT * FROM course_polls WHERE event_id=$1::uuid ORDER BY created_at DESC", eid))
+    pids = [p["id"] for p in polls]
+    votes_rows = clean_many(await pg_pool.fetch("SELECT * FROM course_poll_votes WHERE poll_id = ANY($1::uuid[])", pids)) if pids else []
+    votes_by_poll = {}
+    for v in votes_rows:
+        votes_by_poll.setdefault(v["poll_id"], []).append(v)
     for p in polls:
-        votes = p.pop("votes", [])
+        votes = votes_by_poll.get(p["id"], [])
         p["vote_counts"] = {opt: sum(1 for v in votes if v["option"] == opt) for opt in p["options"]}
         p["total_votes"] = len(votes)
         mine = next((v for v in votes if v["user_id"] == u["id"]), None)
         p["my_vote"] = mine["option"] if mine else None
+    participants = clean_many(await pg_pool.fetch("SELECT * FROM event_signups WHERE event_id=$1::uuid", eid))
     return {
         "rep": rep, "teams": teams, "polls": polls,
         "can_manage": await can_manage_course(eid, ev, u),
-        "sport_types": SPORT_TYPES, "participants": ev.get("signups", []),
+        "sport_types": SPORT_TYPES, "participants": participants,
         "event_title": ev.get("title"), "event_urgency": ev.get("urgency"),
     }
 
@@ -584,14 +633,13 @@ async def set_course_rep(eid: str, body: RepIn, u: dict = Depends(require_approv
     ev = await get_event_or_404(eid)
     if not (is_staff_role(u["role"]) or ev["created_by"] == u["id"]):
         raise HTTPException(403, "Solo admin o organizzatore")
-    target = next((s for s in ev.get("signups", []) if s["user_id"] == body.user_id), None)
+    target = await pg_pool.fetchrow("SELECT name FROM event_signups WHERE event_id=$1::uuid AND user_id=$2::uuid", eid, body.user_id)
     if not target:
         raise HTTPException(400, "L'utente deve essere iscritto all'evento")
-    await db.course_reps.update_one(
-        {"event_id": eid},
-        {"$set": {"event_id": eid, "user_id": body.user_id, "name": target["name"], "set_at": now_iso()}},
-        upsert=True,
-    )
+    await pg_pool.execute(
+        "INSERT INTO course_reps (event_id,user_id,name,set_at) VALUES ($1::uuid,$2::uuid,$3,$4) "
+        "ON CONFLICT (event_id) DO UPDATE SET user_id=$2, name=$3, set_at=$4",
+        eid, body.user_id, target["name"], datetime.now(timezone.utc))
     return {"ok": True}
 
 @api.delete("/events/{eid}/course/rep")
@@ -599,7 +647,7 @@ async def remove_course_rep(eid: str, u: dict = Depends(require_approved)):
     ev = await get_event_or_404(eid)
     if not (is_staff_role(u["role"]) or ev["created_by"] == u["id"]):
         raise HTTPException(403, "Solo admin o organizzatore")
-    await db.course_reps.delete_one({"event_id": eid})
+    await pg_pool.execute("DELETE FROM course_reps WHERE event_id=$1::uuid", eid)
     return {"ok": True}
 
 @api.post("/events/{eid}/course/teams")
@@ -609,10 +657,12 @@ async def create_team(eid: str, body: TeamIn, u: dict = Depends(require_approved
         raise HTTPException(403, "Solo admin, organizzatore o capitano")
     if body.sport_type not in SPORT_TYPES:
         raise HTTPException(400, "Tipo sport non valido")
-    team = {"id": str(uuid.uuid4()), "event_id": eid, "name": body.name.strip()[:60],
-            "sport_type": body.sport_type, "members": [], "created_at": now_iso()}
-    await db.course_teams.insert_one(dict(team))
-    team.pop("_id", None)
+    tid = str(uuid.uuid4())
+    row = await pg_pool.fetchrow(
+        "INSERT INTO course_teams (id,event_id,name,sport_type,created_at) VALUES ($1::uuid,$2::uuid,$3,$4,$5) RETURNING *",
+        tid, eid, body.name.strip()[:60], body.sport_type, datetime.now(timezone.utc))
+    team = clean(row)
+    team["members"] = []
     return team
 
 @api.delete("/events/{eid}/course/teams/{tid}")
@@ -620,7 +670,7 @@ async def delete_team(eid: str, tid: str, u: dict = Depends(require_approved)):
     ev = await get_event_or_404(eid)
     if not await can_manage_course(eid, ev, u):
         raise HTTPException(403, "Non autorizzato")
-    await db.course_teams.delete_one({"id": tid, "event_id": eid})
+    await pg_pool.execute("DELETE FROM course_teams WHERE id=$1::uuid AND event_id=$2::uuid", tid, eid)
     return {"ok": True}
 
 @api.post("/events/{eid}/course/teams/{tid}/members")
@@ -628,18 +678,23 @@ async def add_team_member(eid: str, tid: str, body: TeamMemberIn, u: dict = Depe
     ev = await get_event_or_404(eid)
     if not await can_manage_course(eid, ev, u):
         raise HTTPException(403, "Non autorizzato")
-    team = await db.course_teams.find_one({"id": tid, "event_id": eid})
+    team = clean(await pg_pool.fetchrow("SELECT * FROM course_teams WHERE id=$1::uuid AND event_id=$2::uuid", tid, eid))
     if not team:
         raise HTTPException(404, "Squadra non trovata")
-    participant = next((s for s in ev.get("signups", []) if s["user_id"] == body.user_id), None)
+    participant = await pg_pool.fetchrow("SELECT name FROM event_signups WHERE event_id=$1::uuid AND user_id=$2::uuid", eid, body.user_id)
     if not participant:
         raise HTTPException(400, "L'utente deve essere iscritto all'evento")
-    if any(m["user_id"] == body.user_id for m in team.get("members", [])):
+    already = await pg_pool.fetchval("SELECT 1 FROM course_team_members WHERE team_id=$1::uuid AND user_id=$2::uuid", tid, body.user_id)
+    if already:
         raise HTTPException(400, "Già in squadra")
     cap = SPORT_TYPES[team["sport_type"]]["max"]
-    if cap and len(team.get("members", [])) >= cap:
-        raise HTTPException(400, f"Squadra piena (massimo {cap})")
-    await db.course_teams.update_one({"id": tid}, {"$push": {"members": {"user_id": body.user_id, "name": participant["name"], "position": None}}})
+    if cap:
+        count = await pg_pool.fetchval("SELECT count(*) FROM course_team_members WHERE team_id=$1::uuid", tid)
+        if count >= cap:
+            raise HTTPException(400, f"Squadra piena (massimo {cap})")
+    await pg_pool.execute(
+        "INSERT INTO course_team_members (team_id,user_id,name,position) VALUES ($1::uuid,$2::uuid,$3,NULL)",
+        tid, body.user_id, participant["name"])
     return {"ok": True}
 
 @api.post("/events/{eid}/course/teams/{tid}/members/{uid}/position")
@@ -647,18 +702,16 @@ async def set_member_position(eid: str, tid: str, uid: str, body: PositionIn, u:
     ev = await get_event_or_404(eid)
     if not await can_manage_course(eid, ev, u):
         raise HTTPException(403, "Non autorizzato")
-    team = await db.course_teams.find_one({"id": tid, "event_id": eid})
-    if not team:
-        raise HTTPException(404, "Squadra non trovata")
-    members = team.get("members", [])
-    if not any(m["user_id"] == uid for m in members):
+    exists = await pg_pool.fetchval("SELECT 1 FROM course_team_members WHERE team_id=$1::uuid AND user_id=$2::uuid", tid, uid)
+    if not exists:
         raise HTTPException(404, "Giocatore non nella squadra")
-    for m in members:
-        if body.position and m.get("position") == body.position and m["user_id"] != uid:
-            m["position"] = None
-        if m["user_id"] == uid:
-            m["position"] = body.position
-    await db.course_teams.update_one({"id": tid}, {"$set": {"members": members}})
+    if body.position:
+        await pg_pool.execute(
+            "UPDATE course_team_members SET position=NULL WHERE team_id=$1::uuid AND position=$2 AND user_id<>$3::uuid",
+            tid, body.position, uid)
+    await pg_pool.execute(
+        "UPDATE course_team_members SET position=$1 WHERE team_id=$2::uuid AND user_id=$3::uuid",
+        body.position, tid, uid)
     return {"ok": True}
 
 @api.delete("/events/{eid}/course/teams/{tid}/members/{uid}")
@@ -666,7 +719,7 @@ async def remove_team_member(eid: str, tid: str, uid: str, u: dict = Depends(req
     ev = await get_event_or_404(eid)
     if not await can_manage_course(eid, ev, u):
         raise HTTPException(403, "Non autorizzato")
-    await db.course_teams.update_one({"id": tid}, {"$pull": {"members": {"user_id": uid}}})
+    await pg_pool.execute("DELETE FROM course_team_members WHERE team_id=$1::uuid AND user_id=$2::uuid", tid, uid)
     return {"ok": True}
 
 @api.post("/events/{eid}/course/polls")
@@ -677,24 +730,26 @@ async def create_poll(eid: str, body: PollIn, u: dict = Depends(require_approved
     opts = [o.strip() for o in body.options if o.strip()]
     if len(opts) < 2:
         raise HTTPException(400, "Servono almeno 2 opzioni")
-    poll = {"id": str(uuid.uuid4()), "event_id": eid, "question": body.question.strip()[:200],
-            "options": opts, "votes": [], "created_by": u["id"], "created_at": now_iso()}
-    await db.course_polls.insert_one(dict(poll))
+    pid = str(uuid.uuid4())
+    await pg_pool.execute(
+        "INSERT INTO course_polls (id,event_id,question,options,created_by,created_at) VALUES ($1::uuid,$2::uuid,$3,$4,$5::uuid,$6)",
+        pid, eid, body.question.strip()[:200], opts, u["id"], datetime.now(timezone.utc))
     return {"ok": True}
 
 @api.post("/events/{eid}/course/polls/{pid}/vote")
 async def vote_poll(eid: str, pid: str, body: PollVoteIn, u: dict = Depends(require_approved)):
     ev = await get_event_or_404(eid)
-    if not event_participant_or_admin(ev, u):
+    if not await event_participant_or_admin(eid, ev, u):
         raise HTTPException(403, "Devi essere iscritto per votare")
-    poll = await db.course_polls.find_one({"id": pid, "event_id": eid})
+    poll = clean(await pg_pool.fetchrow("SELECT * FROM course_polls WHERE id=$1::uuid AND event_id=$2::uuid", pid, eid))
     if not poll:
         raise HTTPException(404, "Sondaggio non trovato")
     if body.option not in poll["options"]:
         raise HTTPException(400, "Opzione non valida")
-    votes = [v for v in poll.get("votes", []) if v["user_id"] != u["id"]]
-    votes.append({"user_id": u["id"], "option": body.option})
-    await db.course_polls.update_one({"id": pid}, {"$set": {"votes": votes}})
+    await pg_pool.execute(
+        "INSERT INTO course_poll_votes (poll_id,user_id,option) VALUES ($1::uuid,$2::uuid,$3) "
+        "ON CONFLICT (poll_id,user_id) DO UPDATE SET option=$3",
+        pid, u["id"], body.option)
     return {"ok": True}
 
 @api.delete("/events/{eid}/course/polls/{pid}")
@@ -702,37 +757,39 @@ async def delete_poll(eid: str, pid: str, u: dict = Depends(require_approved)):
     ev = await get_event_or_404(eid)
     if not await can_manage_course(eid, ev, u):
         raise HTTPException(403, "Non autorizzato")
-    await db.course_polls.delete_one({"id": pid, "event_id": eid})
+    await pg_pool.execute("DELETE FROM course_polls WHERE id=$1::uuid AND event_id=$2::uuid", pid, eid)
     return {"ok": True}
 
 @api.get("/events/{eid}/course/chat")
 async def get_course_chat(eid: str, u: dict = Depends(require_approved)):
     ev = await get_event_or_404(eid)
-    if not event_participant_or_admin(ev, u):
+    if not await event_participant_or_admin(eid, ev, u):
         raise HTTPException(403, "Devi essere iscritto per vedere la chat")
-    return await db.course_chat.find({"event_id": eid}, {"_id": 0}).sort("created_at", 1).to_list(300)
+    return clean_many(await pg_pool.fetch("SELECT * FROM course_chat WHERE event_id=$1::uuid ORDER BY created_at", eid))
 
 @api.post("/events/{eid}/course/chat")
 async def post_course_chat(eid: str, body: CourseMessageIn, u: dict = Depends(require_approved)):
     ev = await get_event_or_404(eid)
-    if not event_participant_or_admin(ev, u):
+    if not await event_participant_or_admin(eid, ev, u):
         raise HTTPException(403, "Devi essere iscritto per scrivere")
     text = body.text.strip()[:500]
     if not text:
         raise HTTPException(400, "Messaggio vuoto")
-    clean = censor(text)
-    blocked = await moderate_text(clean)
+    clean_text = censor(text)
+    blocked = await moderate_text(clean_text)
     if blocked:
-        clean = "*" * len(clean)
-    msg = {"id": str(uuid.uuid4()), "event_id": eid, "user_id": u["id"], "user_name": u["name"],
-           "avatar_color": u.get("avatar_color", "#7C3AED"), "text": clean, "created_at": now_iso()}
-    await db.course_chat.insert_one(dict(msg))
-    return msg
+        clean_text = "*" * len(clean_text)
+    mid = str(uuid.uuid4())
+    row = await pg_pool.fetchrow(
+        "INSERT INTO course_chat (id,event_id,user_id,user_name,avatar_color,text,created_at) VALUES ($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7) RETURNING *",
+        mid, eid, u["id"], u["name"], u.get("avatar_color", "#7C3AED"), clean_text, datetime.now(timezone.utc))
+    return clean(row)
 
 # ---------------- public chat ----------------
 @api.get("/chat/messages")
 async def get_messages(u: dict = Depends(require_approved)):
-    msgs = await db.chat_messages.find({}, {"_id": 0}).sort("created_at", -1).limit(80).to_list(80)
+    rows = await pg_pool.fetch("SELECT * FROM chat_messages ORDER BY created_at DESC LIMIT 80")
+    msgs = clean_many(rows)
     return list(reversed(msgs))
 
 @api.post("/chat/messages")
@@ -740,21 +797,19 @@ async def post_message(body: MessageIn, u: dict = Depends(require_approved)):
     text = body.text.strip()[:500]
     if not text:
         raise HTTPException(400, "Messaggio vuoto")
-    clean = censor(text)
-    blocked = await moderate_text(clean)
+    clean_text = censor(text)
+    blocked = await moderate_text(clean_text)
     if blocked:
-        clean = "*" * len(clean)
-    msg = {
-        "id": str(uuid.uuid4()), "user_id": u["id"], "user_name": u["name"],
-        "avatar_color": u.get("avatar_color", "#7C3AED"),
-        "text": clean, "censored": clean != text or blocked, "created_at": now_iso(),
-    }
-    await db.chat_messages.insert_one(dict(msg))
-    return msg
+        clean_text = "*" * len(clean_text)
+    mid = str(uuid.uuid4())
+    row = await pg_pool.fetchrow(
+        "INSERT INTO chat_messages (id,user_id,user_name,avatar_color,text,censored,created_at) VALUES ($1::uuid,$2::uuid,$3,$4,$5,$6,$7) RETURNING *",
+        mid, u["id"], u["name"], u.get("avatar_color", "#7C3AED"), clean_text, clean_text != text or blocked, datetime.now(timezone.utc))
+    return clean(row)
 
 @api.delete("/chat/messages/{mid}")
 async def delete_message(mid: str, u: dict = Depends(require_admin)):
-    await db.chat_messages.delete_one({"id": mid})
+    await pg_pool.execute("DELETE FROM chat_messages WHERE id=$1::uuid", mid)
     return {"ok": True}
 
 class BulkDeleteIn(BaseModel):
@@ -762,7 +817,9 @@ class BulkDeleteIn(BaseModel):
 
 @api.post("/chat/messages/delete")
 async def bulk_delete_messages(body: BulkDeleteIn, u: dict = Depends(require_admin)):
-    await db.chat_messages.delete_many({"id": {"$in": body.ids}})
+    if not body.ids:
+        return {"ok": True, "deleted": 0}
+    await pg_pool.execute("DELETE FROM chat_messages WHERE id = ANY($1::uuid[])", body.ids)
     return {"ok": True, "deleted": len(body.ids)}
 
 # ---------------- object storage ----------------
@@ -804,20 +861,21 @@ async def news_upload(file: UploadFile = File(...), u: dict = Depends(require_ad
 
 @api.get("/news")
 async def list_news(u: dict = Depends(require_approved)):
-    return await db.news.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return clean_many(await pg_pool.fetch("SELECT * FROM news ORDER BY created_at DESC LIMIT 200"))
 
 @api.post("/news")
 async def create_news(body: NewsIn, u: dict = Depends(require_admin)):
-    item = {"id": str(uuid.uuid4()), "title": body.title, "body": body.body,
-            "attachments": body.attachments, "author_name": u["name"], "created_at": now_iso()}
-    await db.news.insert_one(dict(item))
+    nid = str(uuid.uuid4())
+    row = await pg_pool.fetchrow(
+        "INSERT INTO news (id,title,body,attachments,author_name,created_at) VALUES ($1::uuid,$2,$3,$4,$5,$6) RETURNING *",
+        nid, body.title, body.body, body.attachments, u["name"], datetime.now(timezone.utc))
+    item = clean(row)
     asyncio.create_task(send_push_to_all("Nuova news · NOI DI 2D", body.title, "/news"))
-    item.pop("_id", None)
     return item
 
 @api.delete("/news/{nid}")
 async def delete_news(nid: str, u: dict = Depends(require_admin)):
-    await db.news.delete_one({"id": nid})
+    await pg_pool.execute("DELETE FROM news WHERE id=$1::uuid", nid)
     return {"ok": True}
 
 @api.get("/news/file/{path:path}")
@@ -835,32 +893,31 @@ async def news_file(path: str, auth: str = Query(None), authorization: str = Hea
 # ---------------- interrogazioni ----------------
 @api.get("/interrogazioni")
 async def list_interrogazioni(u: dict = Depends(require_approved)):
-    return await db.interrogazioni.find({"user_id": u["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return clean_many(await pg_pool.fetch("SELECT * FROM interrogazioni WHERE user_id=$1::uuid ORDER BY created_at DESC", u["id"]))
 
 @api.post("/interrogazioni")
 async def create_interrogazione(body: InterrogazioneIn, u: dict = Depends(require_approved)):
-    item = {"id": str(uuid.uuid4()), "user_id": u["id"], "subject": body.subject,
-            "tipo": body.tipo, "num_domande": body.num_domande, "voto": body.voto, "created_at": now_iso()}
-    await db.interrogazioni.insert_one(dict(item))
-    item.pop("_id", None)
-    return item
+    iid = str(uuid.uuid4())
+    row = await pg_pool.fetchrow(
+        "INSERT INTO interrogazioni (id,user_id,subject,tipo,num_domande,voto,created_at) VALUES ($1::uuid,$2::uuid,$3,$4,$5,$6,$7) RETURNING *",
+        iid, u["id"], body.subject, body.tipo, body.num_domande, body.voto, datetime.now(timezone.utc))
+    return clean(row)
 
 @api.patch("/interrogazioni/{iid}")
 async def update_interrogazione(iid: str, body: VotoIn, u: dict = Depends(require_approved)):
-    await db.interrogazioni.update_one({"id": iid, "user_id": u["id"]}, {"$set": {"voto": body.voto}})
+    await pg_pool.execute("UPDATE interrogazioni SET voto=$1 WHERE id=$2::uuid AND user_id=$3::uuid", body.voto, iid, u["id"])
     return {"ok": True}
 
 @api.delete("/interrogazioni/{iid}")
 async def delete_interrogazione(iid: str, u: dict = Depends(require_approved)):
-    await db.interrogazioni.delete_one({"id": iid, "user_id": u["id"]})
+    await pg_pool.execute("DELETE FROM interrogazioni WHERE id=$1::uuid AND user_id=$2::uuid", iid, u["id"])
     return {"ok": True}
 
 # ---------------- reminders ----------------
 @api.get("/reminders")
 async def list_reminders(u: dict = Depends(require_approved)):
-    items = await db.reminders.find(
-        {"$or": [{"is_public": True}, {"user_id": u["id"]}]}, {"_id": 0}
-    ).sort("created_at", -1).to_list(300)
+    items = clean_many(await pg_pool.fetch(
+        "SELECT * FROM reminders WHERE is_public=true OR user_id=$1::uuid ORDER BY created_at DESC LIMIT 300", u["id"]))
     for r in items:
         r["mine"] = r["user_id"] == u["id"]
     return items
@@ -870,26 +927,26 @@ async def create_reminder(body: ReminderIn, u: dict = Depends(require_approved))
     text = body.text.strip()[:500]
     if not text:
         raise HTTPException(400, "Testo vuoto")
-    item = {"id": str(uuid.uuid4()), "user_id": u["id"], "author_name": u["name"],
-            "avatar_color": u.get("avatar_color", "#7C3AED"), "text": text,
-            "is_public": body.is_public, "created_at": now_iso()}
-    await db.reminders.insert_one(dict(item))
-    item.pop("_id", None)
+    rid = str(uuid.uuid4())
+    row = await pg_pool.fetchrow(
+        "INSERT INTO reminders (id,user_id,author_name,avatar_color,text,is_public,created_at) VALUES ($1::uuid,$2::uuid,$3,$4,$5,$6,$7) RETURNING *",
+        rid, u["id"], u["name"], u.get("avatar_color", "#7C3AED"), text, body.is_public, datetime.now(timezone.utc))
+    item = clean(row)
     return {**item, "mine": True}
 
 @api.delete("/reminders/{rid}")
 async def delete_reminder(rid: str, u: dict = Depends(require_approved)):
-    r = await db.reminders.find_one({"id": rid})
+    r = clean(await pg_pool.fetchrow("SELECT * FROM reminders WHERE id=$1::uuid", rid))
     if not r:
         raise HTTPException(404, "Non trovato")
     if r["user_id"] != u["id"] and not is_staff_role(u["role"]):
         raise HTTPException(403, "Non autorizzato")
-    await db.reminders.delete_one({"id": rid})
+    await pg_pool.execute("DELETE FROM reminders WHERE id=$1::uuid", rid)
     return {"ok": True}
 
 @api.post("/reminders/{rid}/report")
 async def report_reminder(rid: str, u: dict = Depends(require_approved)):
-    r = await db.reminders.find_one({"id": rid})
+    r = clean(await pg_pool.fetchrow("SELECT * FROM reminders WHERE id=$1::uuid", rid))
     if not r or not r.get("is_public"):
         raise HTTPException(404, "Reminder pubblico non trovato")
     asyncio.create_task(send_push_to_admins(
@@ -903,17 +960,19 @@ class AvvisoIn(BaseModel):
 
 @api.post("/admin/avvisi")
 async def send_avviso(body: AvvisoIn, u: dict = Depends(require_admin)):
-    item = {"id": str(uuid.uuid4()), "user_id": body.user_id, "from_name": u["name"],
-            "text": body.text.strip()[:500], "read": False, "created_at": now_iso()}
-    await db.avvisi.insert_one(dict(item))
-    subs = await db.push_subscriptions.find({"user_id": body.user_id}, {"_id": 0}).to_list(100)
-    asyncio.create_task(_push(subs, "Avviso dall'admin", item["text"], "/"))
+    aid = str(uuid.uuid4())
+    text = body.text.strip()[:500]
+    await pg_pool.execute(
+        "INSERT INTO avvisi (id,user_id,from_name,text,read,created_at) VALUES ($1::uuid,$2::uuid,$3,$4,false,$5)",
+        aid, body.user_id, u["name"], text, datetime.now(timezone.utc))
+    subs = clean_many(await pg_pool.fetch("SELECT * FROM push_subscriptions WHERE user_id=$1::uuid", body.user_id))
+    asyncio.create_task(_push(subs, "Avviso dall'admin", text, "/"))
     return {"ok": True}
 
 @api.get("/avvisi")
 async def my_avvisi(u: dict = Depends(require_approved)):
-    items = await db.avvisi.find({"user_id": u["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
-    await db.avvisi.update_many({"user_id": u["id"], "read": False}, {"$set": {"read": True}})
+    items = clean_many(await pg_pool.fetch("SELECT * FROM avvisi WHERE user_id=$1::uuid ORDER BY created_at DESC LIMIT 100", u["id"]))
+    await pg_pool.execute("UPDATE avvisi SET read=true WHERE user_id=$1::uuid AND read=false", u["id"])
     return items
 
 # ---------------- orario (provvisorio / settimana specifica / definitivo + personalizzazioni) ----------------
@@ -936,54 +995,57 @@ class OrarioPersonalIn(BaseModel):
 
 @api.get("/orario")
 async def get_orario(u: dict = Depends(require_approved)):
-    meta = await db.orario_meta.find_one({"_id": "meta"}) or {}
+    meta = clean(await pg_pool.fetchrow("SELECT * FROM orario_meta WHERE id='meta'")) or {}
     active = meta.get("active_type", "definitivo")
-    doc = await db.orario_settings.find_one({"_id": active}) or {}
-    personal = await db.orario_personal.find_one({"_id": u["id"]}) or {}
+    doc = clean(await pg_pool.fetchrow("SELECT * FROM orario_settings WHERE type=$1", active)) or {}
+    personal = clean(await pg_pool.fetchrow("SELECT * FROM orario_personal WHERE user_id=$1::uuid", u["id"])) or {}
     return {
         "active_type": active, "week_label": doc.get("week_label"),
-        "grid": doc.get("grid", {}), "days": ORARIO_DAYS, "hours": ORARIO_HOURS,
-        "my_overrides": personal.get("cells", {}),
+        "grid": doc.get("grid") or {}, "days": ORARIO_DAYS, "hours": ORARIO_HOURS,
+        "my_overrides": personal.get("cells") or {},
     }
 
 @api.get("/admin/orario")
 async def get_admin_orario(u: dict = Depends(require_admin)):
-    meta = await db.orario_meta.find_one({"_id": "meta"}) or {}
+    meta = clean(await pg_pool.fetchrow("SELECT * FROM orario_meta WHERE id='meta'")) or {}
     grids = {}
     for t in ORARIO_TYPES:
-        doc = await db.orario_settings.find_one({"_id": t}) or {}
-        grids[t] = {"grid": doc.get("grid", {}), "week_label": doc.get("week_label")}
+        doc = clean(await pg_pool.fetchrow("SELECT * FROM orario_settings WHERE type=$1", t)) or {}
+        grids[t] = {"grid": doc.get("grid") or {}, "week_label": doc.get("week_label")}
     return {"active_type": meta.get("active_type", "definitivo"), "grids": grids, "days": ORARIO_DAYS, "hours": ORARIO_HOURS}
 
 @api.post("/admin/orario")
 async def save_orario(body: OrarioIn, u: dict = Depends(require_admin)):
     if body.type not in ORARIO_TYPES:
         raise HTTPException(400, "Tipo orario non valido")
-    await db.orario_settings.update_one(
-        {"_id": body.type},
-        {"$set": {"grid": body.grid, "week_label": body.week_label, "updated_at": now_iso()}},
-        upsert=True,
-    )
+    await pg_pool.execute(
+        "INSERT INTO orario_settings (type,grid,week_label,updated_at) VALUES ($1,$2,$3,$4) "
+        "ON CONFLICT (type) DO UPDATE SET grid=$2, week_label=$3, updated_at=$4",
+        body.type, body.grid, body.week_label, datetime.now(timezone.utc))
     return {"ok": True}
 
 @api.post("/admin/orario/active")
 async def set_active_orario(body: OrarioActiveIn, u: dict = Depends(require_admin)):
     if body.type not in ORARIO_TYPES:
         raise HTTPException(400, "Tipo orario non valido")
-    await db.orario_meta.update_one({"_id": "meta"}, {"$set": {"active_type": body.type}}, upsert=True)
+    await pg_pool.execute(
+        "INSERT INTO orario_meta (id,active_type) VALUES ('meta',$1) ON CONFLICT (id) DO UPDATE SET active_type=$1",
+        body.type)
     return {"ok": True}
 
 @api.post("/orario/personal")
 async def save_personal_orario(body: OrarioPersonalIn, u: dict = Depends(require_approved)):
     subject = (body.subject or "").strip()
     note = (body.note or "").strip()
-    doc = await db.orario_personal.find_one({"_id": u["id"]}) or {}
-    cells = doc.get("cells", {})
+    doc = clean(await pg_pool.fetchrow("SELECT * FROM orario_personal WHERE user_id=$1::uuid", u["id"])) or {}
+    cells = doc.get("cells") or {}
     if not subject and not note:
         cells.pop(body.cell, None)
     else:
         cells[body.cell] = {"subject": subject or None, "note": note or None}
-    await db.orario_personal.update_one({"_id": u["id"]}, {"$set": {"cells": cells}}, upsert=True)
+    await pg_pool.execute(
+        "INSERT INTO orario_personal (user_id,cells) VALUES ($1::uuid,$2) ON CONFLICT (user_id) DO UPDATE SET cells=$2",
+        u["id"], cells)
     return {"ok": True, "cells": cells}
 
 # ---------------- messaggi privati staff <-> studenti ----------------
@@ -995,19 +1057,19 @@ def dm_thread_id(a: str, b: str) -> str:
 
 async def dm_last_and_unread(me_id: str, other_id: str):
     tid = dm_thread_id(me_id, other_id)
-    last = await db.private_messages.find_one({"thread_id": tid}, {"_id": 0}, sort=[("created_at", -1)])
-    unread = await db.private_messages.count_documents({"thread_id": tid, "to_id": me_id, "read": False})
+    last = clean(await pg_pool.fetchrow("SELECT * FROM private_messages WHERE thread_id=$1 ORDER BY created_at DESC LIMIT 1", tid))
+    unread = await pg_pool.fetchval("SELECT count(*) FROM private_messages WHERE thread_id=$1 AND to_id=$2::uuid AND read=false", tid, me_id)
     return last, unread
 
 @api.get("/dm/contacts")
 async def dm_contacts(u: dict = Depends(require_approved)):
     if is_staff_role(u["role"]):
-        others = await db.users.find({"status": "approved", "role": "member"}, {"_id": 0}).to_list(1000)
+        others = clean_many(await pg_pool.fetch("SELECT * FROM users WHERE status='approved' AND role='member'"))
     else:
-        staff_from = await db.private_messages.distinct("from_id", {"to_id": u["id"]})
-        staff_to = await db.private_messages.distinct("to_id", {"from_id": u["id"]})
-        ids = list(set(staff_from + staff_to))
-        others = await db.users.find({"id": {"$in": ids}}, {"_id": 0}).to_list(200)
+        rows_from = await pg_pool.fetch("SELECT DISTINCT from_id FROM private_messages WHERE to_id=$1::uuid", u["id"])
+        rows_to = await pg_pool.fetch("SELECT DISTINCT to_id FROM private_messages WHERE from_id=$1::uuid", u["id"])
+        ids = list({str(r["from_id"]) for r in rows_from} | {str(r["to_id"]) for r in rows_to})
+        others = clean_many(await pg_pool.fetch("SELECT * FROM users WHERE id = ANY($1::uuid[])", ids)) if ids else []
     contacts = []
     for x in others:
         last, unread = await dm_last_and_unread(u["id"], x["id"])
@@ -1017,19 +1079,19 @@ async def dm_contacts(u: dict = Depends(require_approved)):
 
 @api.get("/dm/messages/{other_id}")
 async def dm_messages(other_id: str, u: dict = Depends(require_approved)):
-    other = await db.users.find_one({"id": other_id})
+    other = clean(await pg_pool.fetchrow("SELECT * FROM users WHERE id=$1::uuid", other_id))
     if not other:
         raise HTTPException(404, "Utente non trovato")
     if is_staff_role(u["role"]) == is_staff_role(other["role"]):
         raise HTTPException(403, "Chat privata consentita solo tra staff e studenti")
     tid = dm_thread_id(u["id"], other_id)
-    msgs = await db.private_messages.find({"thread_id": tid}, {"_id": 0}).sort("created_at", 1).to_list(500)
-    await db.private_messages.update_many({"thread_id": tid, "to_id": u["id"], "read": False}, {"$set": {"read": True}})
+    msgs = clean_many(await pg_pool.fetch("SELECT * FROM private_messages WHERE thread_id=$1 ORDER BY created_at", tid))
+    await pg_pool.execute("UPDATE private_messages SET read=true WHERE thread_id=$1 AND to_id=$2::uuid AND read=false", tid, u["id"])
     return msgs
 
 @api.post("/dm/messages/{other_id}")
 async def dm_send(other_id: str, body: DMIn, u: dict = Depends(require_approved)):
-    other = await db.users.find_one({"id": other_id})
+    other = clean(await pg_pool.fetchrow("SELECT * FROM users WHERE id=$1::uuid", other_id))
     if not other:
         raise HTTPException(404, "Utente non trovato")
     if is_staff_role(u["role"]) == is_staff_role(other["role"]):
@@ -1037,10 +1099,12 @@ async def dm_send(other_id: str, body: DMIn, u: dict = Depends(require_approved)
     text = body.text.strip()[:1000]
     if not text:
         raise HTTPException(400, "Messaggio vuoto")
-    msg = {"id": str(uuid.uuid4()), "thread_id": dm_thread_id(u["id"], other_id), "from_id": u["id"], "from_name": u["name"],
-           "to_id": other_id, "text": text, "read": False, "created_at": now_iso()}
-    await db.private_messages.insert_one(dict(msg))
-    subs = await db.push_subscriptions.find({"user_id": other_id}, {"_id": 0}).to_list(50)
+    mid = str(uuid.uuid4())
+    row = await pg_pool.fetchrow(
+        "INSERT INTO private_messages (id,thread_id,from_id,from_name,to_id,text,read,created_at) VALUES ($1::uuid,$2,$3::uuid,$4,$5::uuid,$6,false,$7) RETURNING *",
+        mid, dm_thread_id(u["id"], other_id), u["id"], u["name"], other_id, text, datetime.now(timezone.utc))
+    msg = clean(row)
+    subs = clean_many(await pg_pool.fetch("SELECT * FROM push_subscriptions WHERE user_id=$1::uuid", other_id))
     asyncio.create_task(_push(subs, f"Messaggio privato da {u['name']}", text[:100], "/messaggi"))
     return msg
 
@@ -1050,18 +1114,16 @@ async def send_action(body: ActionIn, u: dict = Depends(require_approved)):
     if body.type not in ("foglietto", "secchio", "pizza", "cuore", "high_five"):
         raise HTTPException(400, "Azione non valida")
     # anti-spam: max 1 action to same target per 4 seconds
-    recent = await db.actions.find_one({
-        "from_user_id": u["id"], "to_user_id": body.to_user_id,
-        "created_at": {"$gt": (datetime.now(timezone.utc) - timedelta(seconds=4)).isoformat()}
-    })
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=4)
+    recent = await pg_pool.fetchval(
+        "SELECT 1 FROM actions WHERE from_user_id=$1::uuid AND to_user_id=$2::uuid AND created_at > $3",
+        u["id"], body.to_user_id, cutoff)
     if recent:
         raise HTTPException(429, "Aspetta un attimo prima di rilanciare!")
-    action = {
-        "id": str(uuid.uuid4()), "from_user_id": u["id"], "from_user_name": u["name"],
-        "to_user_id": body.to_user_id, "type": body.type,
-        "seen": False, "created_at": now_iso(),
-    }
-    await db.actions.insert_one(dict(action))
+    aid = str(uuid.uuid4())
+    await pg_pool.execute(
+        "INSERT INTO actions (id,from_user_id,from_user_name,to_user_id,type,seen,created_at) VALUES ($1::uuid,$2::uuid,$3,$4::uuid,$5,false,$6)",
+        aid, u["id"], u["name"], body.to_user_id, body.type, datetime.now(timezone.utc))
     labels = {"foglietto": "ti ha lanciato un foglietto", "secchio": "ti ha rovesciato un secchio d'acqua",
               "pizza": "ti ha lanciato una pizza", "cuore": "ti ha mandato un cuore", "high_five": "ti ha dato il cinque"}
     asyncio.create_task(send_push_to_all(f"{u['name']} {labels[body.type]}!", "Apri NOI DI 2D per vedere!", "/"))
@@ -1069,10 +1131,10 @@ async def send_action(body: ActionIn, u: dict = Depends(require_approved)):
 
 @api.get("/actions/inbox")
 async def action_inbox(u: dict = Depends(require_approved)):
-    actions = await db.actions.find({"to_user_id": u["id"], "seen": False}, {"_id": 0}).to_list(50)
+    actions = clean_many(await pg_pool.fetch("SELECT * FROM actions WHERE to_user_id=$1::uuid AND seen=false", u["id"]))
     if actions:
         ids = [a["id"] for a in actions]
-        await db.actions.update_many({"id": {"$in": ids}}, {"$set": {"seen": True}})
+        await pg_pool.execute("UPDATE actions SET seen=true WHERE id = ANY($1::uuid[])", ids)
     return actions
 
 # ---------------- study ai ----------------
@@ -1097,16 +1159,15 @@ async def study_upload(file: UploadFile = File(...), u: dict = Depends(require_a
     if not text:
         raise HTTPException(400, "Nessun testo estratto dal file")
     fid = str(uuid.uuid4())
-    await db.study_files.insert_one({
-        "id": fid, "user_id": u["id"], "filename": file.filename,
-        "text": text, "created_at": now_iso(),
-    })
+    await pg_pool.execute(
+        "INSERT INTO study_files (id,user_id,filename,text,created_at) VALUES ($1::uuid,$2::uuid,$3,$4,$5)",
+        fid, u["id"], file.filename, text, datetime.now(timezone.utc))
     return {"file_id": fid, "filename": file.filename, "chars": len(text)}
 
 @api.post("/study/flashcards")
 async def gen_flashcards(body: FlashcardIn, u: dict = Depends(require_approved)):
     if body.file_id:
-        f = await db.study_files.find_one({"id": body.file_id, "user_id": u["id"]})
+        f = await pg_pool.fetchrow("SELECT text FROM study_files WHERE id=$1::uuid AND user_id=$2::uuid", body.file_id, u["id"])
         if not f:
             raise HTTPException(404, "File non trovato")
         source = f["text"]
@@ -1151,13 +1212,17 @@ async def study_chat(body: StudyChatIn, u: dict = Depends(require_approved)):
               "Fai UNA domanda alla volta, valuta la risposta precedente in modo costruttivo con un voto da 1 a 10, "
               "poi poni la domanda successiva. Sii conciso e parla in italiano.")
     if get_google_key():
-        session = await db.study_sessions.find_one({"session_id": body.session_id}) or {"messages": []}
+        session = clean(await pg_pool.fetchrow("SELECT * FROM study_sessions WHERE session_id=$1", body.session_id)) or {"messages": []}
+        messages = session.get("messages") or []
         try:
-            reply = await google_chat_reply(system, session["messages"], body.message)
+            reply = await google_chat_reply(system, messages, body.message)
         except Exception as e:
             raise HTTPException(500, f"Errore AI: {e}")
-        new_messages = (session["messages"] + [{"role": "user", "text": body.message}, {"role": "model", "text": reply}])[-20:]
-        await db.study_sessions.update_one({"session_id": body.session_id}, {"$set": {"messages": new_messages}}, upsert=True)
+        new_messages = (messages + [{"role": "user", "text": body.message}, {"role": "model", "text": reply}])[-20:]
+        await pg_pool.execute(
+            "INSERT INTO study_sessions (session_id,messages,updated_at) VALUES ($1,$2,$3) "
+            "ON CONFLICT (session_id) DO UPDATE SET messages=$2, updated_at=$3",
+            body.session_id, new_messages, datetime.now(timezone.utc))
     else:
         chat = make_chat(f"study-{body.session_id}", system)
         try:
@@ -1175,11 +1240,10 @@ async def vapid_public():
 async def push_subscribe(body: SubscribeIn, u: dict = Depends(require_approved)):
     sub = body.subscription
     endpoint = sub.get("endpoint")
-    await db.push_subscriptions.update_one(
-        {"endpoint": endpoint},
-        {"$set": {"endpoint": endpoint, "subscription": sub, "user_id": u["id"], "created_at": now_iso()}},
-        upsert=True,
-    )
+    await pg_pool.execute(
+        "INSERT INTO push_subscriptions (id,endpoint,subscription,user_id,created_at) VALUES ($1::uuid,$2,$3,$4::uuid,$5) "
+        "ON CONFLICT (endpoint) DO UPDATE SET subscription=$3, user_id=$4, created_at=$5",
+        str(uuid.uuid4()), endpoint, sub, u["id"], datetime.now(timezone.utc))
     return {"ok": True}
 
 @api.get("/")
@@ -1195,9 +1259,8 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    await db.users.create_index("email", unique=True)
-    await db.users.create_index("id")
-    await db.push_subscriptions.create_index("endpoint", unique=True)
+    global pg_pool
+    pg_pool = await asyncpg.create_pool(DATABASE_URL, statement_cache_size=0, min_size=1, max_size=10, init=_init_conn)
     try:
         await asyncio.to_thread(init_storage)
         logger.info("Storage initialized")
@@ -1206,18 +1269,17 @@ async def startup():
     await load_ai_settings()
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@noidi2d.it").lower()
     admin_pw = os.environ.get("ADMIN_PASSWORD", "AdminNoi2D!")
-    existing = await db.users.find_one({"email": admin_email})
+    existing = await pg_pool.fetchrow("SELECT * FROM users WHERE email=$1", admin_email)
     if not existing:
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()), "name": "Admin", "email": admin_email,
-            "password_hash": hash_password(admin_pw), "role": "admin",
-            "status": "approved", "can_create_events": True,
-            "avatar_color": "#7C3AED", "created_at": now_iso(),
-        })
+        await pg_pool.execute(
+            "INSERT INTO users (id,name,email,password_hash,role,status,can_create_events,avatar_color,created_at) "
+            "VALUES ($1::uuid,'Admin',$2,$3,'admin','approved',true,'#7C3AED',$4)",
+            str(uuid.uuid4()), admin_email, hash_password(admin_pw), datetime.now(timezone.utc))
         logger.info("Admin seeded")
     elif not verify_password(admin_pw, existing["password_hash"]):
-        await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_pw)}})
+        await pg_pool.execute("UPDATE users SET password_hash=$1 WHERE email=$2", hash_password(admin_pw), admin_email)
 
 @app.on_event("shutdown")
 async def shutdown():
-    client.close()
+    if pg_pool:
+        await pg_pool.close()
