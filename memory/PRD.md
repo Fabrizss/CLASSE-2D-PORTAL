@@ -6,6 +6,13 @@ Portale gestione classe "NOI DI 2D" (scuola, italiano), design moderno/minimalis
 ## Stack
 React + FastAPI + PostgreSQL (Supabase, via asyncpg — migrato da MongoDB il 2026-09-17). Auth JWT (localStorage Bearer). AI: Google Gemini (admin-configurabile) con fallback Emergent LLM key. Email: Resend (opzionale). Web Push: pywebpush/VAPID. Object storage: Emergent objstore per allegati news.
 
+## Implemented (2026-09-17, upload limits + branding)
+- Limiti di caricamento: max 10MB per file (News/Studio AI), tipi consentiti (News: png/jpg/jpeg/gif/webp/pdf; Studio AI: pdf/txt/md), max 20 upload/giorno per utente per tipo (tabella `uploads_log`), risposta 429 se superato.
+- Eliminazione automatica: i file di Aiuto Studio AI (`study_files`) vengono eliminati dopo 3 giorni da un task in background (loop ogni ora). Gli allegati News NON scadono.
+- Logo dell'app personalizzabile da Admin → tab "Personalizza": upload PNG/JPG/WEBP (max 5MB) che sostituisce il logo ovunque (navbar + pagina di login) senza refresh, tramite `BrandingContext` + endpoint pubblico `GET /api/branding`; pulsante "Ripristina predefinito".
+- Nuovi endpoint: GET/POST/DELETE `/api/admin/logo`, GET pubblici `/api/branding`, `/api/branding/logo`. Tabella `app_settings` estesa con `logo_path/logo_content_type/logo_updated_at`, nuova tabella `uploads_log`.
+- Testato: 17/17 pytest nuovi (`test_upload_limits_and_branding.py`) + regressione precedente intatta.
+
 ## Implemented (2026-09-17, migrazione DB)
 - Backend riscritto completamente da MongoDB/Motor a PostgreSQL/asyncpg (Supabase). `DATABASE_URL` in backend/.env. Pool asyncpg con `_init_conn` per codec jsonb, helper `clean()`/`clean_many()` per serializzare UUID/datetime nelle risposte JSON.
 - Tutti gli endpoint verificati (27/27 test pytest in `/app/backend/tests/test_postgres_migration.py`): auth, admin/users, eventi+iscrizioni, pannello corso (squadre/formazioni/posizioni/sondaggi/chat), chat pubblica, messaggi privati, orario, news, reminder, interrogazioni, azioni P2P, AI settings, study.

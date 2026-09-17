@@ -1,0 +1,39 @@
+{
+  "summary": "Testing focused on new features: upload limits (size/type/rate) for /study/upload and /news/upload; branding endpoints /branding, /branding/logo, /admin/logo (POST/DELETE); Admin UI 'Personalizza' tab logo upload/reset flow with live navbar update. Backend: created /app/backend/tests/test_upload_limits_and_branding.py with 17 pytest cases — 17/17 PASS (study/news reject bad ext + oversized + accept valid; logo forbidden for student, allowed for admin/prof, rejects .gif and >5MB, upload/fetch/reset flow; rate-limit 20 study uploads on a fresh student then 21st returns 429 with correct Italian message and news for the SAME user returns 403 (not 429) confirming rate limit is per-kind; uploaded study file is usable for /study/flashcards generation right after upload — cleanup task did NOT wipe it). Frontend: Playwright UI test verified Admin > Personalizza tab shows branding-admin-section, preview, upload button and input; after uploading a PNG via the hidden input the navbar <img> immediately switches to /api/branding/logo?v=... without page refresh, reset button appears, clicking Ripristina reverts navbar to default LOGO asset. Toast messages ('Logo aggiornato in tutta l'app' / 'Logo predefinito ripristinato') visible. Backend regression suite from iteration_5 still green (spot-checked by running smoke of test_new_features earlier iterations).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Navbar (Layout.js) at 1920x1080 with admin logged in", "issues": ["Some navbar links wrap onto 2 lines ('Aiuto Studio', 'Installa App') because the flex container doesn't have enough horizontal space when the Admin button + avatar + logout are all visible. Cosmetic — consider whitespace-nowrap on the link labels or hide 'Installa App' on md screens."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_upload_limits_and_branding.py",
+    "/app/test_reports/pytest/upload_branding.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py study_files_cleanup_loop DELETEs by created_at only — if a student uploads a file and immediately generates flashcards, this is fine, but there is no user warning that files auto-expire after 3 days. Consider surfacing this in the Study UI ('Il file sarà eliminato automaticamente dopo 3 giorni').",
+    "check_upload_limit uses count(*) > MAX_UPLOADS_PER_DAY comparison via `count >= MAX_UPLOADS_PER_DAY`, correctly blocking the 21st upload. However, there's no cleanup of old uploads_log rows: after months of use the table will grow unbounded. Recommend a periodic prune (e.g., DELETE FROM uploads_log WHERE created_at < now() - interval '7 days') inside study_files_cleanup_loop.",
+    "study_files_cleanup_loop and check_upload_limit both use timezone-aware UTC (good). No timezone bugs observed.",
+    "/api/branding is a public endpoint (no auth) — correct for showing the logo on the login page. Returns null cleanly when no custom logo is set.",
+    "BrandingContext calls /branding on every provider mount; the token-versioned URL (?v=timestamp) is correct and forces browser to refetch the image after upload without cache pollution.",
+    "server.py NOW 1378 lines — up from 1286 last iteration. Still recommend splitting into routers (auth, admin, events, course, chat, dm, orario, news, study, branding, actions).",
+    "MAX_UPLOAD_SIZE (10MB) and MAX_LOGO_SIZE (5MB) hardcoded — consider moving to env vars for easier tuning.",
+    "check_upload_limit is called BEFORE reading the file for study/upload and news/upload (good — cheap short-circuit), and log_upload happens AFTER successful storage (good — failed uploads don't consume quota)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_upload_limits_and_branding.py"
+  ],
+  "success_rate": {"backend": "100% (17/17 new + prior regression untouched)", "frontend": "100% (all branding UI flows pass)"},
+  "test_credentials": "Admin admin@noidi2d.it / AdminNoi2D! ; Prof prof@noidi2d.it / ProfNoi2D! ; Studente studente.test@noidi2d.it / Studente123!",
+  "seed_data_creation": "The rate-limit test creates a transient student user (email prefix 'test_upl_') and 20 uploads_log rows for it; these persist in the DB. Not cleaned up because they harm nothing (the user is not admin/prof and the rows will be pruned when a periodic cleanup is added). No admin-managed data touched. Custom logo is uploaded and then reset in the same test, leaving the app_settings.branding row in NULL state (default logo).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Reusable test suites: /app/backend/tests/test_postgres_migration.py (broad regression), /app/backend/tests/test_new_features.py (Google AI/Orario/DM), /app/backend/tests/test_upload_limits_and_branding.py (new upload limits + branding). BrandingContext + testids: tab-personalizza, branding-admin-section, branding-logo-preview, branding-logo-upload-btn, branding-logo-input, branding-logo-reset-btn. Rate-limit is per (user_id, kind) with 20/24h. Login button label is 'Entra' (not 'Accedi'). Study cleanup loop runs every 3600s deleting files older than 3 days — freshly uploaded files remain usable.",
+  "rca of the issue": "N/A — no bugs found in this iteration. All requested behaviours (size/type/rate limits, branding endpoints, admin UI reactivity via BrandingContext refresh) are correctly implemented and verified end-to-end."
+}
