@@ -1,2 +1,2 @@
-# The Python backend dependencies live in backend/.
+# Root requirements file used by deployment providers.
 -r backend/requirements.txt
